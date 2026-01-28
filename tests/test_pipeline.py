@@ -956,10 +956,10 @@ def test_experience_vector_index_semantic_search():
     record_a = ExperienceRecord(text="We met Alex at the cafe", metadata={"id": "a"})
     record_b = ExperienceRecord(text="It rained all day", metadata={"id": "b"})
 
-    asyncio.run(index.add_record_async(record_a))
-    asyncio.run(index.add_record_async(record_b))
+    asyncio.run(index.add_record_async(record_a, "TestPersona"))
+    asyncio.run(index.add_record_async(record_b, "TestPersona"))
 
-    results = asyncio.run(index.search("Alex cafe", top_k=2))
+    results = asyncio.run(index.search("Alex cafe", persona_id="TestPersona", top_k=2))
     assert results
     assert results[0].metadata["id"] == "a"
 
@@ -971,10 +971,10 @@ def test_semantic_experience_score_gating():
         def is_enabled(self) -> bool:
             return True
 
-        async def add_record_async(self, record: ExperienceRecord) -> None:
+        async def add_record_async(self, record: ExperienceRecord, persona_id: str) -> None:
             return None
 
-        async def search(self, query: str, top_k: int = 3):
+        async def search(self, query: str, persona_id: str, top_k: int = 3):
             return [
                 ExperienceRecord(text="top", metadata={"experience_id": "e1", "score": 0.80}),
                 ExperienceRecord(text="near", metadata={"experience_id": "e2", "score": 0.79}),

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from .models import Action
+from .time_utils import get_pacific_timestamp
 
 
 @dataclass
@@ -43,7 +44,7 @@ def decode_message(line: str) -> InboundMessage:
 
 
 def _now_ts() -> int:
-    return int(time.time())
+    return get_pacific_timestamp()
 
 
 def _new_id(prefix: str) -> str:

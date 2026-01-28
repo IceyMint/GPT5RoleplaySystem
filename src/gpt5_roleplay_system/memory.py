@@ -216,9 +216,11 @@ class ExperienceStore:
     def __init__(self) -> None:
         self._experiences: List[ExperienceRecord] = []
 
-    def add(self, text: str, metadata: Dict[str, Any]) -> ExperienceRecord:
+    def add(self, text: str, metadata: Dict[str, Any], persona_id: str = "") -> ExperienceRecord:
         meta = dict(metadata or {})
         meta.setdefault("experience_id", uuid.uuid4().hex)
+        if persona_id:
+            meta["persona_id"] = persona_id
         record = ExperienceRecord(text=text, metadata=meta)
         self._experiences.append(record)
         return record

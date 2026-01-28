@@ -39,15 +39,15 @@ class Neo4jExperienceVectorIndex:
     def is_enabled(self) -> bool:
         return bool(self._model and self._token)
 
-    async def add_record_async(self, record: ExperienceRecord) -> None:
+    async def add_record_async(self, record: ExperienceRecord, persona_id: str) -> None:
         if not self.is_enabled():
             return
-        await asyncio.to_thread(self._add_record_sync, record)
+        await asyncio.to_thread(self._add_record_sync, record, persona_id)
 
-    async def search(self, query: str, top_k: int = 3) -> List[ExperienceRecord]:
+    async def search(self, query: str, persona_id: str, top_k: int = 3) -> List[ExperienceRecord]:
         if not self.is_enabled() or not query.strip():
             return []
-        return await asyncio.to_thread(self._search_sync, query, top_k)
+        return await asyncio.to_thread(self._search_sync, query, persona_id, top_k)
 
     def _session(self):
         return self._driver.session(database=self._database)
@@ -84,23 +84,26 @@ class Neo4jExperienceVectorIndex:
             except Exception:
                 return False
 
-    def _add_record_sync(self, record: ExperienceRecord) -> None:
+    def _add_record_sync(self, record: ExperienceRecord, persona_id: str) -> None:
         if self._genai_available:
-            self._add_with_genai(record)
+            self._add_with_genai(record, persona_id)
             return
         if self._external_embedder and self._external_embedder.is_available():
-            self._add_with_external_embedder(record)
+            self._add_with_external_embedder(record, persona_id)
 
-    def _add_with_genai(self, record: ExperienceRecord) -> None:
+    def _add_with_genai(self, record: ExperienceRecord, persona_id: str) -> None:
         metadata = _normalize_metadata(record.metadata)
         statement = """
         WITH genai.vector.encode($text, $provider, {token: $token, model: $model}) AS embedding
+        MERGE (p:Persona {id: $persona_id})
         MERGE (e:Experience {id: $id})
         SET e.text = $text,
             e.sender_id = $sender_id,
             e.sender_name = $sender_name,
             e.timestamp = $timestamp,
-            e.embedding = embedding
+            e.embedding = embedding,
+            e.persona_id = $persona_id
+        MERGE (p)-[:HAD_EXPERIENCE]->(e)
         """
         with self._session() as session:
             try:
@@ -114,26 +117,30 @@ class Neo4jExperienceVectorIndex:
                     sender_id=metadata.get("sender_id", ""),
                     sender_name=metadata.get("sender_name", ""),
                     timestamp=float(metadata.get("timestamp", 0.0) or 0.0),
+                    persona_id=persona_id,
                 ).consume()
             except Exception:
                 # If genai fails at runtime, fall back to external embedder if available.
                 self._genai_available = False
                 if self._external_embedder and self._external_embedder.is_available():
-                    self._add_with_external_embedder(record)
+                    self._add_with_external_embedder(record, persona_id)
 
-    def _add_with_external_embedder(self, record: ExperienceRecord) -> None:
+    def _add_with_external_embedder(self, record: ExperienceRecord, persona_id: str) -> None:
         vectors = self._external_embedder.embed([record.text]) if self._external_embedder else [[]]
         embedding = vectors[0] if vectors else []
         if not embedding:
             return
         metadata = _normalize_metadata(record.metadata)
         statement = """
+        MERGE (p:Persona {id: $persona_id})
         MERGE (e:Experience {id: $id})
         SET e.text = $text,
             e.sender_id = $sender_id,
             e.sender_name = $sender_name,
             e.timestamp = $timestamp,
-            e.embedding = $embedding
+            e.embedding = $embedding,
+            e.persona_id = $persona_id
+        MERGE (p)-[:HAD_EXPERIENCE]->(e)
         """
         with self._session() as session:
             session.run(
@@ -144,22 +151,27 @@ class Neo4jExperienceVectorIndex:
                 sender_name=metadata.get("sender_name", ""),
                 timestamp=float(metadata.get("timestamp", 0.0) or 0.0),
                 embedding=embedding,
+                persona_id=persona_id,
             ).consume()
 
-    def _search_sync(self, query: str, top_k: int) -> List[ExperienceRecord]:
+    def _search_sync(self, query: str, persona_id: str, top_k: int) -> List[ExperienceRecord]:
         if self._genai_available:
-            return self._search_with_genai(query, top_k)
+            return self._search_with_genai(query, persona_id, top_k)
         if self._external_embedder and self._external_embedder.is_available():
             vectors = self._external_embedder.embed([query])
             if not vectors or not vectors[0]:
                 return []
-            return self._search_with_embedding(vectors[0], top_k)
+            return self._search_with_embedding(vectors[0], persona_id, top_k)
         return []
 
-    def _search_with_genai(self, query: str, top_k: int) -> List[ExperienceRecord]:
+    def _search_with_genai(self, query: str, persona_id: str, top_k: int) -> List[ExperienceRecord]:
+        # Filter by relationship to the Persona node.
         statement = """
-        WITH genai.vector.encode($text, $provider, {token: $token, model: $model}) AS embedding
+        MATCH (p:Persona {id: $persona_id})-[:HAD_EXPERIENCE]->(e:Experience)
+        WITH p, collect(e) as persona_experiences
+        WITH genai.vector.encode($text, $provider, {token: $token, model: $model}) AS embedding, persona_experiences
         CALL db.index.vector.queryNodes($index_name, $top_k, embedding) YIELD node, score
+        WHERE node IN persona_experiences
         RETURN node, score
         ORDER BY score DESC
         LIMIT $top_k
@@ -174,15 +186,20 @@ class Neo4jExperienceVectorIndex:
                     model=self._model,
                     index_name=self._config.index_name,
                     top_k=int(top_k),
+                    persona_id=persona_id,
                 )
                 return _records_from_query(records)
             except Exception:
                 self._genai_available = False
                 return []
 
-    def _search_with_embedding(self, embedding: List[float], top_k: int) -> List[ExperienceRecord]:
+    def _search_with_embedding(self, embedding: List[float], persona_id: str, top_k: int) -> List[ExperienceRecord]:
+        # Filter by relationship to the Persona node.
         statement = """
+        MATCH (p:Persona {id: $persona_id})-[:HAD_EXPERIENCE]->(e:Experience)
+        WITH collect(e) as persona_experiences
         CALL db.index.vector.queryNodes($index_name, $top_k, $embedding) YIELD node, score
+        WHERE node IN persona_experiences
         RETURN node, score
         ORDER BY score DESC
         LIMIT $top_k
@@ -193,6 +210,7 @@ class Neo4jExperienceVectorIndex:
                 index_name=self._config.index_name,
                 top_k=int(top_k),
                 embedding=embedding,
+                persona_id=persona_id,
             )
             return _records_from_query(records)
 

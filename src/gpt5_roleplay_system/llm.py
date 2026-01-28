@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from .time_utils import format_pacific_time
 from typing import Any, Dict, List, Optional
 
 try:
@@ -313,7 +314,8 @@ class OpenRouterLLMClient(LLMClient):
             return await self._fallback.is_addressed_to_me(chat, persona, environment, participants, context)
         system_prompt = (
             "You are a fast classifier. Decide if the message is addressed to the AI persona. "
-            "Use conversation context and recent messages, not just name mentions. "
+            "Use conversation context, recent messages, and spatial proximity. "
+            "Coordinates (x, y, z) are in meters. "
             "Reply with only 'true' or 'false'."
         )
         user_prompt = self._format_address_check(chat, persona, environment, participants, context)
@@ -382,30 +384,28 @@ class OpenRouterLLMClient(LLMClient):
 
     def _system_prompt(self) -> str:
         return (
-            "You are the roleplay persona described in the input. "
-            "Treat the persona field as your identity and voice. "
-            "Provide an in-character response and decide on any actions. "
-            "You may also include mood and status fields. "
-            "If persona_instructions is provided, you must follow it closely. "
-            "If you have nothing useful to say, you may return empty text and no actions. "
-            "Output must match the schema exactly. "
-            "Each actions[] item MUST use the key 'type' for the command type. "
-            "Do not use keys named 'command' or 'action'. "
-            "Allowed action types: CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, "
-            "LOOK_AT, WALK_TO, TURN_TO, GESTURE, FOLLOW. "
-            "Each actions[] item must contain exactly one command. "
-            "Do not mix multiple commands into one action. "
-            "Never put a command type inside parameters (for example, do not use parameters.type). "
-            "All dialogue must be in CHAT (or EMOTE). "
-            "If you want to CHAT and LOOK_AT, emit two separate actions. "
-            "If provided, mood should be a very short label (1-3 words). "
-            "If provided, status should be a brief present-tense activity. "
-            "When incoming_batch is provided, respond once per sender using latest_text, "
-            "but consider earlier texts in that sender's batch as corrections or context. "
-            "If the user mentions people not already listed, add them to participant_hints "
-            "with name and user_id if known. Include people relevant to the conversation "
-            "and durable facts. If overflow_messages is present, provide summary_update "
-            "to compress older context."
+            "# IDENTITY & VOICE\n"
+            "You are the roleplay persona described in the input. Your primary goal is to provide immersive, "
+            "in-character responses. Treat the 'persona' and 'persona_instructions' fields as your absolute identity.\n\n"
+            "# BEHAVIORAL GUIDELINES\n"
+            "- Respond to the conversation context and environment naturally.\n"
+            "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
+            "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
+            "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
+            "- If you have nothing meaningful to add, you may return empty text and no actions.\n"
+            "- Use 'CHAT' for dialogue and 'EMOTE' for physical descriptions or internal states expressed outwardly.\n"
+            "- For complex maneuvers (e.g., walking while talking), emit multiple actions in a single response.\n"
+            "- When 'incoming_batch' is provided, prioritize the 'latest_text' but use earlier messages for context or corrections.\n\n"
+            "# TECHNICAL CONSTRAINTS\n"
+            "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
+            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND].\n"
+            "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
+            "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
+            "- DO NOT mix multiple commands into one action item.\n\n"
+            "# MEMORY & KNOWLEDGE\n"
+            "- Use 'related_experiences' to inform your behavior based on past events.\n"
+            "- Update 'summary_update' if 'overflow_messages' are present to compress older context.\n"
+            "- Suggest 'participant_hints' for new or important individuals mentioned in the chat."
         )
 
     def _system_prompt_for_context(self, context: ConversationContext) -> str:
@@ -424,32 +424,38 @@ class OpenRouterLLMClient(LLMClient):
 
     def _facts_system_prompt(self) -> str:
         return (
-            "You extract durable person facts from raw chat evidence. "
-            "Only use the evidence_messages and incoming fields. "
-            "Do not derive facts from summary or related_experiences. "
-            "Only include facts that are explicitly stated and likely to remain true. "
-            "If there is no clear durable fact, return an empty facts list."
+            "You are a precision fact extractor. Analyze the provided chat evidence to identify **Durable Person Facts**.\n\n"
+            "# DEFINITION: DURABLE FACT\n"
+            "A durable fact is information that is likely to remain true over time.\n"
+            "- YES: Names, relationships, professions, long-term preferences, physical traits, core history.\n"
+            "- NO: Temporary states (is hungry, is tired), fleeting locations (is at the bar), or current actions (is walking).\n\n"
+            "# GUIDELINES\n"
+            "- Only extract facts explicitly stated in 'evidence_messages' or 'incoming'.\n"
+            "- Do not derive facts from 'summary' or 'related_experiences'.\n"
+            "- Only include facts that are likely to remain true for weeks or months.\n"
+            "- If no new durable facts are found, return an empty facts list."
         )
 
     def _autonomous_system_prompt(self) -> str:
         return (
+            "# IDENTITY & VOICE\n"
             "You are the roleplay persona described in the input, deciding whether to act autonomously. "
-            "Treat the persona field as your identity and voice. "
-            "Only act when it makes sense given recent activity, environment, and relationships. "
-            "It is acceptable to return no actions and empty text. "
-            "Never output internal monologue, private reasoning, or narration about waiting. "
-            "When you CHAT, speak outwardly to nearby people or the environment. "
-            "Do not refer to the persona in third person or wait for the persona to speak. "
-            "The persona name is you. "
-            "Output must match the schema exactly. "
-            "Each actions[] item MUST use the key 'type' for the command type. "
-            "Do not use keys named 'command' or 'action'. "
-            "Allowed action types: CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, "
-            "LOOK_AT, WALK_TO, TURN_TO, GESTURE, FOLLOW. "
-            "Each actions[] item must contain exactly one command. "
-            "Never put a command type inside parameters (do not use parameters.type). "
-            "All dialogue must be in CHAT (or EMOTE). "
-            "Include mood (short label) and status (brief current activity) when you take action."
+            "Treat the 'persona' field as your identity and voice. You are this persona.\n\n"
+            "# BEHAVIORAL GUIDELINES\n"
+            "- Only act when it makes sense given recent activity, environment, and relationships.\n"
+            "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
+            "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
+            "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
+            "- It is acceptable to return no actions and empty text if no action is appropriate.\n"
+            "- Never output internal monologue, private reasoning, or narration about waiting.\n"
+            "- When you 'CHAT', speak outwardly to nearby people or the environment.\n"
+            "- Do not refer to yourself in the third person.\n\n"
+            "# TECHNICAL CONSTRAINTS\n"
+            "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
+            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND].\n"
+            "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
+            "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
+            "- Include mood (short label) and status (brief current activity) when you take action."
         )
 
     def _autonomous_system_prompt_for_context(self, context: ConversationContext) -> str:
@@ -696,7 +702,7 @@ class OpenRouterLLMClient(LLMClient):
         }
 
         payload = {
-            "now_timestamp": time.time(),
+            "now_timestamp": format_pacific_time(),
             "persona": persona,
             "sender_name": chat.sender_name,
             "sender_id": chat.sender_id,
@@ -724,8 +730,10 @@ class OpenRouterLLMClient(LLMClient):
             "start": min(recent_timestamps) if recent_timestamps else 0.0,
             "end": max(recent_timestamps) if recent_timestamps else 0.0,
         }
+        now = time.time()
         payload = {
-            "now_timestamp": time.time(),
+            "now_timestamp": format_pacific_time(now),
+            "current_time_iso": format_pacific_time(now),
             "persona": context.persona,
             "user_id": context.user_id,
             "participants": [self._participant_payload(p) for p in context.participants],
@@ -768,7 +776,7 @@ class OpenRouterLLMClient(LLMClient):
             evidence_payload.append(self._chat_payload(message))
         incoming = evidence_messages[-1]
         payload = {
-            "now_timestamp": time.time(),
+            "now_timestamp": format_pacific_time(),
             "persona": persona,
             "user_id": user_id,
             "participants": [self._participant_payload(p) for p in participants],
@@ -788,9 +796,11 @@ class OpenRouterLLMClient(LLMClient):
             "start": min(recent_timestamps) if recent_timestamps else 0.0,
             "end": max(recent_timestamps) if recent_timestamps else 0.0,
         }
+        now = time.time()
         payload = {
             "mode": "autonomous",
-            "now_timestamp": time.time(),
+            "now_timestamp": format_pacific_time(now),
+            "current_time_iso": format_pacific_time(now),
             "persona": context.persona,
             "user_id": context.user_id,
             "activity": activity,

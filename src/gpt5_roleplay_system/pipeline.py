@@ -17,6 +17,7 @@ from .memory import (
     TokenSimilaritySearch,
 )
 from .models import Action, CommandType, ConversationContext, EnvironmentSnapshot, InboundChat, Participant
+from .time_utils import format_pacific_time
 from .name_utils import (
     extract_display_name,
     extract_username,
@@ -35,10 +36,10 @@ class ExperienceIndexProtocol(Protocol):
     def is_enabled(self) -> bool:
         ...
 
-    async def add_record_async(self, record: ExperienceRecord) -> None:
+    async def add_record_async(self, record: ExperienceRecord, persona_id: str) -> None:
         ...
 
-    async def search(self, query: str, top_k: int = 3) -> List[ExperienceRecord]:
+    async def search(self, query: str, persona_id: str, top_k: int = 3) -> List[ExperienceRecord]:
         ...
 
 
@@ -416,7 +417,9 @@ class MessagePipeline:
             top_k=self._experience_top_k,
         )
         if self._experience_vector_index and self._experience_vector_index.is_enabled():
-            semantic_related = await self._experience_vector_index.search(query, top_k=self._experience_top_k)
+            semantic_related = await self._experience_vector_index.search(
+                query, persona_id=self._persona, top_k=self._experience_top_k
+            )
             semantic_related = self._gate_semantic_experiences(semantic_related)
             related = self._merge_related_experiences(semantic_related, related)
         now_ts = time.time()
@@ -721,7 +724,7 @@ class MessagePipeline:
                 "sender_display_name": persona,
                 "sender_full_name": persona,
                 "text": text,
-                "timestamp": timestamp,
+                "timestamp": format_pacific_time(timestamp),
             }
         full_name = (
             str(raw.get("_sender_full_name") or "")
@@ -739,7 +742,7 @@ class MessagePipeline:
             "sender_display_name": sender_display,
             "sender_full_name": full_name,
             "text": text,
-            "timestamp": timestamp,
+            "timestamp": format_pacific_time(timestamp),
         }
 
     def _participant_key(self, user_id: str, name: str) -> str:
@@ -988,11 +991,11 @@ class MessagePipeline:
         status_seconds_ago = (current - status_ts) if status_ts > 0.0 else None
         return {
             "mood": self._current_mood,
-            "mood_ts": mood_ts,
+            "mood_ts": format_pacific_time(mood_ts),
             "mood_seconds_ago": mood_seconds_ago,
             "mood_source": self._mood_source,
             "status": self._current_status,
-            "status_ts": status_ts,
+            "status_ts": format_pacific_time(status_ts),
             "status_seconds_ago": status_seconds_ago,
             "status_source": self._status_source,
             "last_inbound_ts": self._last_inbound_ts,
@@ -1037,11 +1040,11 @@ class MessagePipeline:
             CommandType.TOUCH: "interacting",
             CommandType.SIT: "sitting",
             CommandType.STAND: "standing",
-            CommandType.LOOK_AT: "looking",
-            CommandType.WALK_TO: "walking",
-            CommandType.TURN_TO: "turning",
-            CommandType.GESTURE: "gesturing",
-            CommandType.FOLLOW: "following",
+            # CommandType.LOOK_AT: "looking",
+            # CommandType.WALK_TO: "walking",
+            # CommandType.TURN_TO: "turning",
+            # CommandType.GESTURE: "gesturing",
+            # CommandType.FOLLOW: "following",
         }
         return mapping.get(command_type, "active")
 
@@ -1181,9 +1184,9 @@ class MessagePipeline:
             return
 
         metadata = self._episode_metadata(snapshot, trigger_reason)
-        record = self._experience_store.add(summary, metadata)
+        record = self._experience_store.add(summary, metadata, persona_id=self._persona)
         if self._experience_vector_index and self._experience_vector_index.is_enabled():
-            asyncio.create_task(self._experience_vector_index.add_record_async(record))
+            asyncio.create_task(self._experience_vector_index.add_record_async(record, self._persona))
 
         overlap = min(self._episode_overlap_messages, count)
         self._rolling_buffer.trim_to_last(overlap)
@@ -1228,8 +1231,8 @@ class MessagePipeline:
             "source": "episode_summary",
             "reason": reason,
             "message_count": len(items),
-            "timestamp_start": min(timestamps) if timestamps else 0.0,
-            "timestamp_end": max(timestamps) if timestamps else 0.0,
+            "timestamp_start": format_pacific_time(min(timestamps)) if timestamps else "0",
+            "timestamp_end": format_pacific_time(max(timestamps)) if timestamps else "0",
             "sender_names": sender_names,
         }
 
@@ -1266,7 +1269,7 @@ class MessagePipeline:
         }
         payload: Dict[str, Any] = {
             "mode": mode,
-            "now_timestamp": time.time(),
+            "now_timestamp": format_pacific_time(),
             "persona": context.persona,
             "user_id": context.user_id,
             "participants": [self._participant_payload(p) for p in context.participants],

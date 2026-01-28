@@ -12,11 +12,11 @@ class CommandType(str, Enum):
     TOUCH = "TOUCH"
     SIT = "SIT"
     STAND = "STAND"
-    LOOK_AT = "LOOK_AT"
-    WALK_TO = "WALK_TO"
-    TURN_TO = "TURN_TO"
-    GESTURE = "GESTURE"
-    FOLLOW = "FOLLOW"
+    # LOOK_AT = "LOOK_AT"
+    # WALK_TO = "WALK_TO"
+    # TURN_TO = "TURN_TO"
+    # GESTURE = "GESTURE"
+    # FOLLOW = "FOLLOW"
 
 
 @dataclass

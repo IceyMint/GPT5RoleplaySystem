@@ -17,6 +17,7 @@ from .neo4j_store import InMemoryKnowledgeStore, Neo4jKnowledgeStore, KnowledgeS
 from .observability import NoOpTracer, WandbTracer
 from .protocol import decode_message
 from .session import ClientSession
+from .time_utils import get_pacific_timestamp
 
 
 logger = logging.getLogger("gpt5_roleplay_server")
@@ -357,13 +358,13 @@ async def _status_loop(session: ClientSession, autonomy: AutonomyConfig) -> None
             "seconds_since_activity": snapshot.get("seconds_since_activity", 0.0),
             "recent_messages": snapshot.get("recent_messages", 0),
             "recent_activity_window_seconds": snapshot.get("recent_activity_window_seconds", window),
-            "last_inbound_ts": snapshot.get("last_inbound_ts", 0.0),
-            "last_response_ts": snapshot.get("last_response_ts", 0.0),
+            "last_inbound_ts": get_pacific_timestamp(snapshot.get("last_inbound_ts", 0.0)),
+            "last_response_ts": get_pacific_timestamp(snapshot.get("last_response_ts", 0.0)),
             "mood": mood,
-            "mood_ts": snapshot.get("mood_ts", 0.0),
+            "mood_ts": get_pacific_timestamp(snapshot.get("mood_ts", 0.0)),
             "mood_source": snapshot.get("mood_source", ""),
             "status": status_value,
-            "status_ts": snapshot.get("status_ts", 0.0),
+            "status_ts": get_pacific_timestamp(snapshot.get("status_ts", 0.0)),
             "status_source": snapshot.get("status_source", ""),
             "autonomy_enabled": autonomy.enabled,
         }

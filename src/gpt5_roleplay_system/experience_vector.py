@@ -118,23 +118,25 @@ class ExperienceVectorIndex:
     def is_enabled(self) -> bool:
         return self._embedder.is_available()
 
-    async def add_record_async(self, record: ExperienceRecord) -> None:
+    async def add_record_async(self, record: ExperienceRecord, persona_id: str) -> None:
         if not self.is_enabled():
             return
-        await asyncio.to_thread(self._add_record_sync, record)
+        await asyncio.to_thread(self._add_record_sync, record, persona_id)
 
-    async def search(self, query: str, top_k: int = 3) -> List[ExperienceRecord]:
+    async def search(self, query: str, persona_id: str, top_k: int = 3) -> List[ExperienceRecord]:
         if not self.is_enabled() or not query.strip():
             return []
         query_embedding = await asyncio.to_thread(self._embed_query, query)
         if not query_embedding:
             return []
-        return await asyncio.to_thread(self._search_with_embedding, query_embedding, top_k)
+        return await asyncio.to_thread(self._search_with_embedding, query_embedding, persona_id, top_k)
 
-    def _add_record_sync(self, record: ExperienceRecord) -> None:
+    def _add_record_sync(self, record: ExperienceRecord, persona_id: str) -> None:
         embedding = self._embed_query(record.text)
         if not embedding:
             return
+        if persona_id:
+            record.metadata["persona_id"] = persona_id
         with self._lock:
             self._items.append(VectorItem(record=record, embedding=embedding))
             self._trim_locked()
@@ -145,11 +147,16 @@ class ExperienceVectorIndex:
             return []
         return vectors[0]
 
-    def _search_with_embedding(self, query_embedding: List[float], top_k: int) -> List[ExperienceRecord]:
+    def _search_with_embedding(
+        self, query_embedding: List[float], persona_id: str, top_k: int
+    ) -> List[ExperienceRecord]:
         with self._lock:
             candidates = list(self._items)
         scored: List[Tuple[float, ExperienceRecord]] = []
         for item in candidates:
+            # Filter by persona_id in metadata.
+            if persona_id and item.record.metadata.get("persona_id") != persona_id:
+                continue
             score = _cosine_similarity(query_embedding, item.embedding)
             if score <= 0.0:
                 continue
