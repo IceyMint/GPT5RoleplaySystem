@@ -97,6 +97,12 @@ class SessionController:
         self._pipeline.set_user_id(user_id)
         self._reset_state_store()
 
+    def set_llm_chat_enabled(self, enabled: bool) -> None:
+        self._pipeline.set_llm_chat_enabled(enabled)
+
+    def llm_chat_enabled(self) -> bool:
+        return self._pipeline.llm_chat_enabled()
+
     def knowledge_store(self) -> KnowledgeStore:
         return self._knowledge_store
 

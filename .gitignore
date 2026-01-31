@@ -3,3 +3,6 @@
 /.venv
 /config.yaml
 /wandb
+src/gpt5_roleplay_system/__pycache__/*
+*.wandb
+src/wandb/*

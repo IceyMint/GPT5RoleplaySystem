@@ -42,7 +42,8 @@ class OpenAIEmbeddingClient(EmbeddingClient):
     ) -> None:
         if OpenAI is None:
             raise RuntimeError("openai package is not installed")
-        self._client = OpenAI(api_key=api_key, base_url=base_url.rstrip("/"), timeout=timeout_seconds)
+        actual_base_url = base_url.rstrip("/") if base_url else None
+        self._client = OpenAI(api_key=api_key, base_url=actual_base_url, timeout=timeout_seconds)
         self._model = model
         self._available = bool(api_key and model)
         self._cache_size = max(0, int(cache_size))

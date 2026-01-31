@@ -11,15 +11,17 @@ import yaml
 @dataclass
 class LLMConfig:
     base_url: str = "https://openrouter.ai/api/v1"
+    embedding_base_url: str = ""
     api_key: str = ""
     model: str = "deepseek/deepseek-v3.2"
     address_model: str = ""
     embedding_model: str = ""
     embedding_api_key: str = ""
     embedding_dimensions: int = 3072
-    max_tokens: int = 500
+    max_tokens: int = 1024
     temperature: float = 0.6
     timeout_seconds: float = 30.0
+    reasoning: str = ""
 
 
 @dataclass
@@ -51,6 +53,12 @@ class FactsConfig:
     interval_seconds: float = 30.0
     evidence_max_messages: int = 24
     in_bundle: bool = False
+
+
+@dataclass
+class FactsDeduplicationConfig:
+    enabled: bool = True
+    interval_hours: float = 4.0
 
 
 @dataclass
@@ -102,6 +110,7 @@ class ServerConfig:
     episode: EpisodeConfig = field(default_factory=EpisodeConfig)
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
+    facts_deduplication: FactsDeduplicationConfig = field(default_factory=FactsDeduplicationConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)
     max_environment_participants: int = 10
     persona_profiles: Dict[str, str] = field(default_factory=dict)
@@ -156,6 +165,7 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
     episode_raw = raw.get("episode_summary", {}) if isinstance(raw.get("episode_summary"), dict) else {}
     autonomy_raw = raw.get("autonomy", {}) if isinstance(raw.get("autonomy"), dict) else {}
     db_raw = raw.get("database", {}) if isinstance(raw.get("database"), dict) else {}
+    facts_deduplication_raw = raw.get("facts_deduplication", {}) if isinstance(raw.get("facts_deduplication"), dict) else {}
     wandb_raw = raw.get("wandb", {}) if isinstance(raw.get("wandb"), dict) else {}
     persona_profiles_raw = raw.get("persona_profiles", {}) if isinstance(raw.get("persona_profiles"), dict) else {}
 
@@ -164,10 +174,14 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         api_key=os.getenv("OPENROUTER_API_KEY", api_keys.get("openrouter_api_key", "")),
         model=os.getenv("GPT5_ROLEPLAY_LLM_MODEL", _pick_model(llm_raw)),
         address_model=os.getenv("GPT5_ROLEPLAY_LLM_ADDRESS_MODEL", llm_raw.get("address_model", "")),
+        embedding_base_url=os.getenv("GPT5_ROLEPLAY_LLM_EMBEDDING_BASE_URL", llm_raw.get("embedding_base_url", "")),
         embedding_model=os.getenv("GPT5_ROLEPLAY_LLM_EMBEDDING_MODEL", llm_raw.get("embedding_model", "")),
         embedding_api_key=os.getenv(
             "OPENAI_API_KEY",
-            api_keys.get("openai_api_key", llm_raw.get("embedding_api_key", "")),
+            api_keys.get(
+                "embedding_api_key",
+                api_keys.get("openai_api_key", llm_raw.get("embedding_api_key", "")),
+            ),
         ),
         embedding_dimensions=int(
             os.getenv(
@@ -175,9 +189,10 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
                 llm_raw.get("embedding_dimensions", LLMConfig().embedding_dimensions),
             )
         ),
-        max_tokens=int(os.getenv("GPT5_ROLEPLAY_LLM_MAX_TOKENS", llm_raw.get("max_tokens", 500))),
+        max_tokens=int(os.getenv("GPT5_ROLEPLAY_LLM_MAX_TOKENS", llm_raw.get("max_tokens", 1024))),
         temperature=float(os.getenv("GPT5_ROLEPLAY_LLM_TEMPERATURE", llm_raw.get("temperature", 0.6))),
         timeout_seconds=float(os.getenv("GPT5_ROLEPLAY_LLM_TIMEOUT", llm_raw.get("timeout", 30.0))),
+        reasoning=os.getenv("GPT5_ROLEPLAY_LLM_REASONING", llm_raw.get("reasoning", "")),
     )
 
     summary_strategy = os.getenv(
@@ -259,6 +274,11 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         database=os.getenv("NEO4J_DATABASE", db_raw.get("name", Neo4jConfig().database)),
     )
 
+    facts_deduplication_config = FactsDeduplicationConfig(
+        enabled=bool(facts_deduplication_raw.get("enabled", FactsDeduplicationConfig().enabled)),
+        interval_hours=float(facts_deduplication_raw.get("interval_hours", FactsDeduplicationConfig().interval_hours)),
+    )
+
     wandb_config = WandbConfig(
         enabled=bool(wandb_raw.get("enabled", False)),
         project=wandb_raw.get("project", WandbConfig().project),
@@ -292,6 +312,7 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         episode=episode_config,
         autonomy=autonomy_config,
         neo4j=neo4j_config,
+        facts_deduplication=facts_deduplication_config,
         wandb=wandb_config,
         max_environment_participants=int(os.getenv("GPT5_ROLEPLAY_MAX_PARTICIPANTS", 10)),
         persona_profiles=persona_profiles,

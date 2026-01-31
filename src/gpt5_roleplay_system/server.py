@@ -122,6 +122,10 @@ class GPT5RoleplayServer:
             autonomy_task = asyncio.create_task(_autonomy_loop(session, queue, self._config.autonomy))
             status_task = asyncio.create_task(_status_loop(session, self._config.autonomy))
 
+        dedup_task = None
+        if self._config.facts_deduplication.enabled:
+            dedup_task = asyncio.create_task(_facts_deduplication_loop(self._config, self._knowledge_store, self._llm_client))
+
         try:
             while not reader.at_eof():
                 line = await reader.readline()
@@ -137,7 +141,7 @@ class GPT5RoleplayServer:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
-            for task in (autonomy_task, status_task):
+            for task in (autonomy_task, status_task, dedup_task):
                 if task is None:
                     continue
                 task.cancel()
@@ -263,6 +267,7 @@ def _build_llm_client(config: ServerConfig):
                 timeout_seconds=config.llm.timeout_seconds,
                 facts_in_bundle=config.facts.in_bundle,
                 fallback=RuleBasedLLMClient(),
+                reasoning=config.llm.reasoning,
             )
         except RuntimeError as exc:
             logger.warning("LLM: OpenRouter client unavailable (%s); using rule-based fallback", exc)
@@ -295,7 +300,7 @@ def _build_experience_index(config: ServerConfig, knowledge_store: KnowledgeStor
     try:
         embedder = OpenAIEmbeddingClient(
             api_key=embedding_api_key,
-            base_url=config.llm.base_url,
+            base_url=config.llm.embedding_base_url,
             model=embedding_model,
             timeout_seconds=config.llm.timeout_seconds,
         )
@@ -373,8 +378,10 @@ async def _status_loop(session: ClientSession, autonomy: AutonomyConfig) -> None
             if autonomy.status_channel is not None:
                 seconds = float(payload["seconds_since_activity"])
                 status_text = (
-                    f"[status] mood={payload['mood']} status={payload['status']} "
-                    f"idle={seconds:.0f}s recent={payload['recent_messages']}"
+                    f"[Status]\n"
+                    f"Mood: {payload['mood']}\n"
+                    f"Status: {payload['status']}\n"
+                    f"Idle: {seconds:.0f}s"
                 )
                 action = Action(
                     command_type=CommandType.CHAT,
@@ -385,6 +392,72 @@ async def _status_loop(session: ClientSession, autonomy: AutonomyConfig) -> None
         except ConnectionError:
             return
         await asyncio.sleep(interval)
+
+
+async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: KnowledgeStore, llm_client) -> None:
+    from .llm import OpenRouterLLMClient
+    if not isinstance(llm_client, OpenRouterLLMClient):
+        return
+
+    interval_seconds = config.facts_deduplication.interval_hours * 3600
+    if interval_seconds <= 0:
+        return
+
+    from .neo4j_store import Neo4jKnowledgeStore
+    if not isinstance(knowledge_store, Neo4jKnowledgeStore):
+        return
+
+    driver = knowledge_store.driver
+    database = knowledge_store.database
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        logger.info("Starting periodic facts deduplication...")
+        try:
+            with driver.session(database=database) as session:
+                result = session.run("MATCH (p:Person) WHERE size(p.facts) > 1 RETURN p.user_id as user_id, p.name as name, p.facts as facts")
+                people = list(result)
+
+            for person in people:
+                user_id = person["user_id"]
+                name = person["name"]
+                facts = person["facts"]
+
+                prompt = (
+                    "You are a data cleaning expert. Refine these facts about a person, removing redundancy and duplicates. "
+                    "Combine similar facts. Output a JSON object with key 'facts' containing a list of strings.\n\n"
+                    f"Person Name: {name}\nCurrent Facts: {json.dumps(facts)}"
+                )
+
+                try:
+                    import json
+                    response_text = await asyncio.to_thread(llm_client._request_text, "You are a precision data cleaner.", prompt)
+
+                    import re
+                    clean_text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", response_text, flags=re.DOTALL)
+                    start = clean_text.find("{")
+                    end = clean_text.rfind("}")
+                    if start != -1 and end != -1:
+                        clean_text = clean_text[start:end+1]
+
+                    data = json.loads(clean_text)
+                    refined_facts = data.get("facts", [])
+
+                    if refined_facts and refined_facts != facts:
+                        logger.info(f"Deduplicated facts for {name} ({user_id}): {len(facts)} -> {len(refined_facts)}")
+                        with driver.session(database=database) as session:
+                            session.run(
+                                "MATCH (p:Person {user_id: $user_id}) SET p.facts = $facts",
+                                user_id=user_id,
+                                facts=refined_facts
+                            )
+                except Exception as e:
+                    logger.error(f"Failed to deduplicate facts for {name}: {e}")
+                    continue
+
+            logger.info("Periodic facts deduplication complete.")
+        except Exception as e:
+            logger.error(f"Error in facts deduplication loop: {e}")
 
 
 def _format_error_text(record: logging.LogRecord, message: str, max_len: int = 280) -> str:

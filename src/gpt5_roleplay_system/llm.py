@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from .time_utils import format_pacific_time
@@ -56,6 +57,15 @@ class LLMResponseBundle:
     status: str | None = None
 
 
+@dataclass
+class LLMStateUpdate:
+    facts: List[ExtractedFact]
+    participant_hints: List[ParticipantHint]
+    summary_update: str | None = None
+    mood: str | None = None
+    status: str | None = None
+
+
 if BaseModel is not None:
 
     class StructuredAction(BaseModel):
@@ -86,6 +96,13 @@ if BaseModel is not None:
         mood: Optional[str] = None
         status: Optional[str] = None
 
+    class StructuredStateUpdate(BaseModel):
+        participant_hints: List[StructuredParticipantHint] = Field(default_factory=list)
+        facts: List[StructuredFact] = Field(default_factory=list)
+        summary_update: Optional[str] = None
+        mood: Optional[str] = None
+        status: Optional[str] = None
+
     class StructuredFactsOnly(BaseModel):
         facts: List[StructuredFact] = Field(default_factory=list)
 
@@ -94,6 +111,7 @@ else:  # pragma: no cover - optional dependency
     StructuredFact = None
     StructuredParticipantHint = None
     StructuredBundle = None
+    StructuredStateUpdate = None
     StructuredFactsOnly = None
 
 
@@ -135,6 +153,21 @@ class LLMClient:
             facts=facts,
             participant_hints=[],
             summary=summary,
+        )
+
+    async def generate_state_update(
+        self,
+        chat: InboundChat,
+        context: ConversationContext,
+        overflow: List[InboundChat] | None = None,
+        incoming_batch: List[Dict[str, Any]] | None = None,
+    ) -> LLMStateUpdate:
+        return LLMStateUpdate(
+            facts=[],
+            participant_hints=[],
+            summary_update=None,
+            mood=None,
+            status=None,
         )
 
     async def generate_autonomous_bundle(
@@ -286,6 +319,7 @@ class OpenRouterLLMClient(LLMClient):
         timeout_seconds: float = 30.0,
         facts_in_bundle: bool = True,
         fallback: Optional[LLMClient] = None,
+        reasoning: str = "",
     ) -> None:
         if OpenAI is None:
             raise RuntimeError("openai package is not installed")
@@ -299,8 +333,10 @@ class OpenRouterLLMClient(LLMClient):
         self._temperature = temperature
         self._timeout = timeout_seconds
         self._facts_in_bundle = bool(facts_in_bundle)
+        self._reasoning = reasoning
         self._fallback = fallback or RuleBasedLLMClient()
-        self._client = OpenAI(api_key=self._api_key, base_url=self._base_url, timeout=self._timeout)
+        actual_base_url = self._base_url if self._base_url else None
+        self._client = OpenAI(api_key=self._api_key, base_url=actual_base_url, timeout=self._timeout)
 
     async def is_addressed_to_me(
         self,
@@ -314,7 +350,8 @@ class OpenRouterLLMClient(LLMClient):
             return await self._fallback.is_addressed_to_me(chat, persona, environment, participants, context)
         system_prompt = (
             "You are a fast classifier. Decide if the message is addressed to the AI persona. "
-            "Use conversation context, recent messages, and spatial proximity. "
+            "Consider nicknames, phonetic spellings, typos, and direct mentions. "
+            "Use conversation context, recent messages, and spatial proximity to judge intent. "
             "Coordinates (x, y, z) are in meters. "
             "Reply with only 'true' or 'false'."
         )
@@ -370,6 +407,26 @@ class OpenRouterLLMClient(LLMClient):
             bundle.facts = _facts_from_structured(facts_only)
         return bundle
 
+    async def generate_state_update(
+        self,
+        chat: InboundChat,
+        context: ConversationContext,
+        overflow: List[InboundChat] | None = None,
+        incoming_batch: List[Dict[str, Any]] | None = None,
+    ) -> LLMStateUpdate:
+        if not self._api_key:
+            return await self._fallback.generate_state_update(chat, context, overflow, incoming_batch)
+        parsed = await asyncio.to_thread(self._request_state_update, chat, context, overflow, incoming_batch)
+        if parsed is None:
+            return await self._fallback.generate_state_update(chat, context, overflow, incoming_batch)
+        update = _state_update_from_structured(parsed)
+        if not self._facts_in_bundle:
+            update.facts = []
+            facts_only = await asyncio.to_thread(self._request_facts_from_chat, chat, context)
+            if facts_only is not None:
+                update.facts = _facts_from_structured(facts_only)
+        return update
+
     async def generate_autonomous_bundle(
         self,
         context: ConversationContext,
@@ -389,7 +446,9 @@ class OpenRouterLLMClient(LLMClient):
             "in-character responses. Treat the 'persona' and 'persona_instructions' fields as your absolute identity.\n\n"
             "# BEHAVIORAL GUIDELINES\n"
             "- Respond to the conversation context and environment naturally.\n"
+            "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
             "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
+            "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
             "- If you have nothing meaningful to add, you may return empty text and no actions.\n"
@@ -406,7 +465,7 @@ class OpenRouterLLMClient(LLMClient):
             "- Use 'related_experiences' to inform your behavior based on past events.\n"
             "- Update 'summary_update' if 'overflow_messages' are present to compress older context.\n"
             "- Suggest 'participant_hints' for new or important individuals mentioned in the chat."
-        )
+        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting (like ```json) outside the JSON object."
 
     def _system_prompt_for_context(self, context: ConversationContext) -> str:
         persona = (context.persona or "").strip()
@@ -434,7 +493,39 @@ class OpenRouterLLMClient(LLMClient):
             "- Do not derive facts from 'summary' or 'related_experiences'.\n"
             "- Only include facts that are likely to remain true for weeks or months.\n"
             "- If no new durable facts are found, return an empty facts list."
+        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
+
+    def _state_system_prompt(self) -> str:
+        return (
+            "# ROLE\n"
+            "You are the roleplay persona described in the input, but you MUST NOT generate any dialogue or actions.\n\n"
+            "# TASK\n"
+            "- Update mood and status based on the latest interaction.\n"
+            "- If 'overflow_messages' are present, provide a concise 'summary_update' to compress older context.\n"
+            "- Optionally provide participant_hints for notable individuals.\n"
+            "- Optionally extract durable person facts (names, relationships, long-term preferences).\n\n"
+            "# CONSTRAINTS\n"
+            "- DO NOT output chat text.\n"
+            "- DO NOT output actions.\n"
+            "- Return ONLY fields defined in the JSON schema.\n\n"
+            "# IMPORTANT: RESPONSE FORMAT\n"
+            "- Respond ONLY with a valid JSON object matching the schema.\n"
+            "- No preamble, no markdown."
         )
+
+    def _state_system_prompt_for_context(self, context: ConversationContext) -> str:
+        persona = (context.persona or "").strip()
+        instructions = (context.persona_instructions or "").strip()
+        lines = [
+            self._state_system_prompt(),
+            "",
+            f"Persona name: {persona}.",
+            "You are this persona.",
+        ]
+        if instructions:
+            lines.append("Persona instructions:")
+            lines.append(instructions)
+        return "\n".join(line for line in lines if line is not None).strip()
 
     def _autonomous_system_prompt(self) -> str:
         return (
@@ -443,7 +534,9 @@ class OpenRouterLLMClient(LLMClient):
             "Treat the 'persona' field as your identity and voice. You are this persona.\n\n"
             "# BEHAVIORAL GUIDELINES\n"
             "- Only act when it makes sense given recent activity, environment, and relationships.\n"
+            "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
             "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
+            "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
             "- It is acceptable to return no actions and empty text if no action is appropriate.\n"
@@ -456,7 +549,7 @@ class OpenRouterLLMClient(LLMClient):
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
             "- Include mood (short label) and status (brief current activity) when you take action."
-        )
+        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
 
     def _autonomous_system_prompt_for_context(self, context: ConversationContext) -> str:
         persona = (context.persona or "").strip()
@@ -472,6 +565,43 @@ class OpenRouterLLMClient(LLMClient):
             lines.append(instructions)
         return "\n".join(line for line in lines if line is not None).strip()
 
+    def _request_structured(self, model_class: Any, kwargs: Dict[str, Any]) -> Optional[Any]:
+        """Execute a structured parse request with fallback cleanup for malformed JSON."""
+        try:
+            completion = self._client.chat.completions.parse(**kwargs)
+            if not completion.choices:
+                return None
+            message = completion.choices[0].message
+            if getattr(message, "refusal", None):
+                return None
+            return getattr(message, "parsed", None)
+        except Exception as exc:
+            raw_text = None
+            # Check for truncation or content filter in API error
+            completion = getattr(exc, "completion", None)
+            if completion and completion.choices:
+                raw_text = completion.choices[0].message.content
+
+            if not raw_text:
+                # If parse() failed due to ValidationError, it won't have the completion object.
+                # We fetch the raw text by performing a standard create() call without parsing.
+                try:
+                    debug_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                    debug_completion = self._client.chat.completions.create(**debug_kwargs)
+                    raw_text = debug_completion.choices[0].message.content
+                except Exception as debug_exc:
+                    logger.error("Failed to fetch raw text for cleanup: %s", debug_exc)
+
+            if raw_text:
+                try:
+                    cleaned = _clean_json(raw_text)
+                    return model_class.model_validate_json(cleaned)
+                except Exception as final_exc:
+                    logger.warning("Robust parse failed even after cleanup: %s. Raw:\n%s", final_exc, raw_text)
+            
+            logger.warning("Structured request failed (%s): %s", exc.__class__.__name__, exc)
+            return None
+
     def _request_bundle(
         self,
         chat: InboundChat,
@@ -479,62 +609,68 @@ class OpenRouterLLMClient(LLMClient):
         overflow: List[InboundChat] | None,
         incoming_batch: List[Dict[str, Any]] | None,
     ) -> Optional[StructuredBundle]:
-        try:
-            completion = self._client.chat.completions.parse(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": self._system_prompt_for_context(context)},
-                    {"role": "user", "content": self._format_context(chat, context, overflow, incoming_batch)},
-                ],
-                response_format=StructuredBundle,
-                max_tokens=self._max_tokens,
-                temperature=self._temperature,
-            )
-        except Exception as exc:
-            logger.warning(
-                "LLM bundle request failed; falling back (%s): %s",
-                exc.__class__.__name__,
-                exc,
-                exc_info=True,
-            )
-            return None
-        if not completion.choices:
-            return None
-        message = completion.choices[0].message
-        if getattr(message, "refusal", None):
-            return None
-        return getattr(message, "parsed", None)
+        kwargs = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": self._system_prompt_for_context(context)},
+                {"role": "user", "content": self._format_context(chat, context, overflow, incoming_batch)},
+            ],
+            "response_format": StructuredBundle,
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+        }
+        if self._reasoning:
+            kwargs["extra_body"] = {
+                "include_reasoning": True,
+                "reasoning_effort": self._reasoning,
+        }
+        return self._request_structured(StructuredBundle, kwargs)
+
+    def _request_state_update(
+        self,
+        chat: InboundChat,
+        context: ConversationContext,
+        overflow: List[InboundChat] | None,
+        incoming_batch: List[Dict[str, Any]] | None,
+    ) -> Optional[StructuredStateUpdate]:
+        kwargs = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": self._state_system_prompt_for_context(context)},
+                {"role": "user", "content": self._format_context(chat, context, overflow, incoming_batch)},
+            ],
+            "response_format": StructuredStateUpdate,
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+        }
+        if self._reasoning:
+            kwargs["extra_body"] = {
+                "include_reasoning": True,
+                "reasoning_effort": self._reasoning,
+            }
+        return self._request_structured(StructuredStateUpdate, kwargs)
 
     def _request_autonomous_bundle(
         self,
         context: ConversationContext,
         activity: Dict[str, Any],
     ) -> Optional[StructuredBundle]:
-        try:
-            completion = self._client.chat.completions.parse(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": self._autonomous_system_prompt_for_context(context)},
-                    {"role": "user", "content": self._format_autonomous_context(context, activity)},
-                ],
-                response_format=StructuredBundle,
-                max_tokens=self._max_tokens,
-                temperature=self._temperature,
-            )
-        except Exception as exc:
-            logger.warning(
-                "LLM autonomous request failed; falling back (%s): %s",
-                exc.__class__.__name__,
-                exc,
-                exc_info=True,
-            )
-            return None
-        if not completion.choices:
-            return None
-        message = completion.choices[0].message
-        if getattr(message, "refusal", None):
-            return None
-        return getattr(message, "parsed", None)
+        kwargs = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": self._autonomous_system_prompt_for_context(context)},
+                {"role": "user", "content": self._format_autonomous_context(context, activity)},
+            ],
+            "response_format": StructuredBundle,
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+        }
+        if self._reasoning:
+            kwargs["extra_body"] = {
+                "include_reasoning": True,
+                "reasoning_effort": self._reasoning,
+            }
+        return self._request_structured(StructuredBundle, kwargs)
 
     def _request_facts_from_chat(self, chat: InboundChat, context: ConversationContext) -> Optional[StructuredFactsOnly]:
         evidence_messages: List[InboundChat] = list(context.recent_messages[-12:])
@@ -563,42 +699,33 @@ class OpenRouterLLMClient(LLMClient):
             return None
         if not evidence_messages:
             return None
-        try:
-            completion = self._client.chat.completions.parse(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": self._facts_system_prompt()},
-                    {
-                        "role": "user",
-                        "content": self._format_facts_context_from_messages(
-                            evidence_messages=evidence_messages,
-                            participants=participants,
-                            persona=persona,
-                            user_id=user_id,
-                            summary=summary,
-                            summary_meta=summary_meta or {},
-                            related_experiences=related_experiences or [],
-                        ),
-                    },
-                ],
-                response_format=StructuredFactsOnly,
-                max_tokens=min(self._max_tokens, 300),
-                temperature=0.0,
-            )
-        except Exception as exc:
-            logger.warning(
-                "LLM facts request failed; falling back (%s): %s",
-                exc.__class__.__name__,
-                exc,
-                exc_info=True,
-            )
-            return None
-        if not completion.choices:
-            return None
-        message = completion.choices[0].message
-        if getattr(message, "refusal", None):
-            return None
-        return getattr(message, "parsed", None)
+        kwargs = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": self._facts_system_prompt()},
+                {
+                    "role": "user",
+                    "content": self._format_facts_context_from_messages(
+                        evidence_messages=evidence_messages,
+                        participants=participants,
+                        persona=persona,
+                        user_id=user_id,
+                        summary=summary,
+                        summary_meta=summary_meta or {},
+                        related_experiences=related_experiences or [],
+                    ),
+                },
+            ],
+            "response_format": StructuredFactsOnly,
+            "max_tokens": max(self._max_tokens, 500),
+            "temperature": 0.0,
+        }
+        if self._reasoning:
+            kwargs["extra_body"] = {
+                "include_reasoning": True,
+                "reasoning_effort": self._reasoning,
+            }
+        return self._request_structured(StructuredFactsOnly, kwargs)
 
     def extract_facts_from_evidence_sync(
         self,
@@ -618,15 +745,21 @@ class OpenRouterLLMClient(LLMClient):
         return _facts_from_structured(parsed) if parsed is not None else []
 
     def _request_text(self, system_prompt: str, user_prompt: str) -> str:
-        completion = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
+        kwargs = {
+            "model": self._model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-        )
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+        }
+        if self._reasoning:
+            kwargs["extra_body"] = {
+                "include_reasoning": True,
+                "reasoning_effort": self._reasoning,
+            }
+        completion = self._client.chat.completions.create(**kwargs)
         if not completion.choices:
             return ""
         message = completion.choices[0].message
@@ -640,15 +773,21 @@ class OpenRouterLLMClient(LLMClient):
         max_tokens: int,
         temperature: float,
     ) -> str:
-        completion = self._client.chat.completions.create(
-            model=model,
-            messages=[
+        kwargs = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if self._reasoning:
+            kwargs["extra_body"] = {
+                "include_reasoning": True,
+                "reasoning_effort": self._reasoning,
+            }
+        completion = self._client.chat.completions.create(**kwargs)
         if not completion.choices:
             return ""
         message = completion.choices[0].message
@@ -665,6 +804,7 @@ class OpenRouterLLMClient(LLMClient):
         env_block = {
             "location": environment.location if environment else "",
             "avatar_position": environment.avatar_position if environment else "",
+            "is_sitting": environment.is_sitting if environment else False,
             "nearby_agents": [],
             "nearby_objects": [],
         }
@@ -697,8 +837,8 @@ class OpenRouterLLMClient(LLMClient):
                 recent_timestamps.append(float(msg.timestamp or 0.0))
 
         recent_time_range = {
-            "start": min(recent_timestamps) if recent_timestamps else 0.0,
-            "end": max(recent_timestamps) if recent_timestamps else 0.0,
+            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
+            "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
 
         payload = {
@@ -727,8 +867,8 @@ class OpenRouterLLMClient(LLMClient):
     ) -> str:
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
         recent_time_range = {
-            "start": min(recent_timestamps) if recent_timestamps else 0.0,
-            "end": max(recent_timestamps) if recent_timestamps else 0.0,
+            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
+            "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
         now = time.time()
         payload = {
@@ -740,6 +880,7 @@ class OpenRouterLLMClient(LLMClient):
             "environment": {
                 "location": context.environment.location,
                 "avatar_position": context.environment.avatar_position,
+                "is_sitting": context.environment.is_sitting,
                 "agents": context.environment.agents,
                 "objects": context.environment.objects,
             },
@@ -793,8 +934,8 @@ class OpenRouterLLMClient(LLMClient):
     def _format_autonomous_context(self, context: ConversationContext, activity: Dict[str, Any]) -> str:
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
         recent_time_range = {
-            "start": min(recent_timestamps) if recent_timestamps else 0.0,
-            "end": max(recent_timestamps) if recent_timestamps else 0.0,
+            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
+            "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
         now = time.time()
         payload = {
@@ -803,11 +944,18 @@ class OpenRouterLLMClient(LLMClient):
             "current_time_iso": format_pacific_time(now),
             "persona": context.persona,
             "user_id": context.user_id,
-            "activity": activity,
+            "activity": {
+                "seconds_since_activity": activity.get("seconds_since_activity"),
+                "last_message_received_at": format_pacific_time(activity.get("last_inbound_ts")),
+                "last_ai_response_at": format_pacific_time(activity.get("last_response_ts")),
+                "mood": activity.get("mood"),
+                "status": activity.get("status"),
+            },
             "participants": [self._participant_payload(p) for p in context.participants],
             "environment": {
                 "location": context.environment.location,
                 "avatar_position": context.environment.avatar_position,
+                "is_sitting": context.environment.is_sitting,
                 "agents": context.environment.agents,
                 "objects": context.environment.objects,
             },
@@ -844,7 +992,7 @@ class OpenRouterLLMClient(LLMClient):
             "sender_display_name": sender_display,
             "sender_full_name": full_name,
             "text": chat.text,
-            "timestamp": float(chat.timestamp or 0.0),
+            "timestamp": format_pacific_time(float(chat.timestamp or 0.0)),
         }
 
     @staticmethod
@@ -894,6 +1042,29 @@ def _bundle_from_structured(parsed: StructuredBundle, mode: str = "chat") -> LLM
         facts=facts,
         participant_hints=hints,
         summary=summary,
+        mood=mood.strip() if isinstance(mood, str) and mood.strip() else None,
+        status=status.strip() if isinstance(status, str) and status.strip() else None,
+    )
+
+
+def _state_update_from_structured(parsed: StructuredStateUpdate) -> LLMStateUpdate:
+    facts = _facts_from_structured(parsed)
+    hints = []
+    for hint in getattr(parsed, "participant_hints", []) or []:
+        hints.append(
+            ParticipantHint(
+                user_id=getattr(hint, "user_id", ""),
+                name=getattr(hint, "name", ""),
+            )
+        )
+    summary_update = getattr(parsed, "summary_update", None)
+    summary = summary_update.strip() if isinstance(summary_update, str) and summary_update.strip() else None
+    mood = getattr(parsed, "mood", None)
+    status = getattr(parsed, "status", None)
+    return LLMStateUpdate(
+        facts=facts,
+        participant_hints=hints,
+        summary_update=summary,
         mood=mood.strip() if isinstance(mood, str) and mood.strip() else None,
         status=status.strip() if isinstance(status, str) and status.strip() else None,
     )
@@ -956,7 +1127,7 @@ def _command_from_structured(action: StructuredAction) -> Optional[Action]:
     content = str(getattr(action, "content", ""))
     if command_type in {CommandType.CHAT, CommandType.EMOTE} and content:
         parameters.setdefault("content", content)
-    if command_type in {CommandType.MOVE, CommandType.WALK_TO, CommandType.LOOK_AT, CommandType.TURN_TO}:
+    if command_type in {CommandType.MOVE}:
         parameters.setdefault("x", str(getattr(action, "x", 0.0)))
         parameters.setdefault("y", str(getattr(action, "y", 0.0)))
         parameters.setdefault("z", str(getattr(action, "z", 0.0)))
@@ -994,6 +1165,33 @@ def _name_in_text(name: str, text: str) -> bool:
     for token in tokens:
         if token in text:
             return True
+        
+        
+        def _clean_json(text: str) -> str:
+            """Attempt to repair common LLM JSON malformations."""
+            if not text:
+                return ""
+        
+            # 1. Remove markdown code blocks if present
+            text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", text, flags=re.DOTALL)
+        
+            # 2. Basic preamble/postamble removal: find first { and last }
+            # Using a slightly more robust approach for nested structures
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                text = text[start : end + 1]
+        
+            # 3. Remove trailing commas in objects and arrays: e.g., {"a": 1,} -> {"a": 1}
+            text = re.sub(r",\s*([\]\}])", r"\1", text)
+        
+            # 4. Remove empty or leading commas in arrays: e.g., [ , {"type":...}] -> [{"type":...}]
+            text = re.sub(r"\[\s*,\s*", "[", text)
+        
+            # 5. Remove multiple consecutive commas
+            text = re.sub(r",\s*,+", ",", text)
+        
+            return text.strip()
     return False
 
 

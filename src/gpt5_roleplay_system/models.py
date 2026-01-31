@@ -51,6 +51,7 @@ class EnvironmentSnapshot:
     objects: List[Dict[str, Any]] = field(default_factory=list)
     location: str = ""
     avatar_position: str = ""
+    is_sitting: bool = False
 
 
 @dataclass

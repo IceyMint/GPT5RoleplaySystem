@@ -101,6 +101,8 @@ class Neo4jExperienceVectorIndex:
             e.sender_id = $sender_id,
             e.sender_name = $sender_name,
             e.timestamp = $timestamp,
+            e.timestamp_start = $timestamp_start,
+            e.timestamp_end = $timestamp_end,
             e.embedding = embedding,
             e.persona_id = $persona_id
         MERGE (p)-[:HAD_EXPERIENCE]->(e)
@@ -117,6 +119,8 @@ class Neo4jExperienceVectorIndex:
                     sender_id=metadata.get("sender_id", ""),
                     sender_name=metadata.get("sender_name", ""),
                     timestamp=float(metadata.get("timestamp", 0.0) or 0.0),
+                    timestamp_start=str(metadata.get("timestamp_start", "") or ""),
+                    timestamp_end=str(metadata.get("timestamp_end", "") or ""),
                     persona_id=persona_id,
                 ).consume()
             except Exception:
@@ -138,6 +142,8 @@ class Neo4jExperienceVectorIndex:
             e.sender_id = $sender_id,
             e.sender_name = $sender_name,
             e.timestamp = $timestamp,
+            e.timestamp_start = $timestamp_start,
+            e.timestamp_end = $timestamp_end,
             e.embedding = $embedding,
             e.persona_id = $persona_id
         MERGE (p)-[:HAD_EXPERIENCE]->(e)
@@ -150,6 +156,8 @@ class Neo4jExperienceVectorIndex:
                 sender_id=metadata.get("sender_id", ""),
                 sender_name=metadata.get("sender_name", ""),
                 timestamp=float(metadata.get("timestamp", 0.0) or 0.0),
+                timestamp_start=str(metadata.get("timestamp_start", "") or ""),
+                timestamp_end=str(metadata.get("timestamp_end", "") or ""),
                 embedding=embedding,
                 persona_id=persona_id,
             ).consume()
@@ -237,6 +245,8 @@ def _records_from_query(records) -> List[ExperienceRecord]:
             "sender_id": node.get("sender_id", ""),
             "sender_name": node.get("sender_name", ""),
             "timestamp": node.get("timestamp", 0.0),
+            "timestamp_start": node.get("timestamp_start", ""),
+            "timestamp_end": node.get("timestamp_end", ""),
             "score": float(score or 0.0),
             "source": "neo4j_vector",
         }

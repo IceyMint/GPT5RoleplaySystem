@@ -39,7 +39,7 @@ Common fields:
 Minimal shape:
 
 ```json
-{"type":"environment_update","data":{"agents":[],"objects":[],"location":"Region","avatar_position":"(0,0,0)","timestamp":1738000000}}
+{"type":"environment_update","data":{"agents":[],"objects":[],"location":"Region","avatar_position":"(0,0,0)","is_sitting":false,"timestamp":1738000000}}
 ```
 
 Notes:
@@ -49,6 +49,7 @@ Notes:
   - `position`
   - `uuid` or `target_uuid`
 - The viewer should exclude the AI's own avatar from `agents`.
+- `is_sitting` is an optional boolean that reflects the AI avatar's current sit state.
 
 ### `set_user_id`
 

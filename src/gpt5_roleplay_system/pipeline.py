@@ -6,7 +6,7 @@ import time
 from typing import Any, Dict, List, Protocol, Set
 
 from .config import EpisodeConfig, FactsConfig
-from .llm import ExtractedFact, LLMClient, LLMResponseBundle, ParticipantHint
+from .llm import ExtractedFact, LLMClient, LLMResponseBundle, LLMStateUpdate, ParticipantHint
 from .memory import (
     ConversationMemory,
     ExperienceRecord,
@@ -85,6 +85,7 @@ class MessagePipeline:
         self._persona_profiles = {str(k).casefold(): str(v) for k, v in (persona_profiles or {}).items() if k and v}
         # Tracks viewer-provided full names by UUID so we can pass display+username to the LLM.
         self._display_names_by_id: Dict[str, str] = {}
+        self._llm_chat_enabled = True
         facts = facts_config or FactsConfig()
         self._facts_enabled = bool(facts.enabled)
         mode = str(facts.mode or "periodic").strip().lower()
@@ -177,6 +178,11 @@ class MessagePipeline:
     def update_environment(self, data: Dict[str, Any]) -> None:
         agents = self._normalize_entities(data.get("agents", []))
         objects = self._normalize_entities(data.get("objects", []))
+        raw_is_sitting = data.get("is_sitting", False)
+        if isinstance(raw_is_sitting, str):
+            is_sitting = raw_is_sitting.strip().lower() in {"1", "true", "yes", "y", "t"}
+        else:
+            is_sitting = bool(raw_is_sitting)
         update_ts = float(data.get("timestamp", time.time()) or time.time())
         for agent in agents:
             if not isinstance(agent, dict):
@@ -191,6 +197,7 @@ class MessagePipeline:
             objects=objects,
             location=data.get("location", ""),
             avatar_position=data.get("avatar_position", ""),
+            is_sitting=is_sitting,
         )
         self._tracer.log_event("environment_update", {"agents": len(self._environment.agents)})
 
@@ -199,6 +206,12 @@ class MessagePipeline:
 
     def set_user_id(self, user_id: str) -> None:
         self._user_id = user_id
+
+    def set_llm_chat_enabled(self, enabled: bool) -> None:
+        self._llm_chat_enabled = bool(enabled)
+
+    def llm_chat_enabled(self) -> bool:
+        return self._llm_chat_enabled
 
     async def process_chat(self, data: Dict[str, Any]) -> List[Any]:
         return await self.process_chat_batch([data])
@@ -217,18 +230,21 @@ class MessagePipeline:
 
         self._last_inbound_ts = time.time()
 
-        for chat in non_self_chats:
-            self._rolling_buffer.add_user_message(chat)
-            self._memory.add_message(chat)
-
         overflow = self._memory.drain_overflow()
         overflow_chats = self._memory_items_to_chats(overflow)
         overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
 
         participants = self._merge_participants(non_self_chats)
-        self._maybe_schedule_fact_sweep(non_self_chats, overflow_chats, participants)
         primary_chat = non_self_chats[-1]
         context = await self._build_context(primary_chat, participants)
+
+        # Add messages to history AFTER building context to avoid duplication
+        # of the current message in 'recent_messages' vs 'incoming'.
+        for chat in non_self_chats:
+            self._rolling_buffer.add_user_message(chat)
+            self._memory.add_message(chat)
+
+        self._maybe_schedule_fact_sweep(non_self_chats, overflow_chats, participants)
 
         addressed = False
         for chat in non_self_chats:
@@ -260,6 +276,42 @@ class MessagePipeline:
             return []
 
         incoming_batch = self._collapse_batch(non_self_chats)
+        if not self._llm_chat_enabled:
+            self._tracer.log_event(
+                "llm_prompt_state",
+                self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),
+            )
+            state_update = await self._llm.generate_state_update(primary_chat, context, overflow_chats, incoming_batch)
+            self._tracer.log_event("llm_response_state", self._state_update_payload(state_update))
+            if state_update.summary_update and overflow:
+                self._memory.apply_summary(state_update.summary_update, timestamps=overflow_timestamps)
+            elif overflow:
+                if self._summary_strategy == "llm":
+                    summary_text = await self._llm.summarize(self._memory.summary(), overflow_chats)
+                    if summary_text:
+                        self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
+                    else:
+                        self._memory.compress_overflow(overflow)
+                else:
+                    self._memory.compress_overflow(overflow)
+            if self._facts_enabled and self._facts_mode == "per_message":
+                self._schedule_store_facts(state_update.facts, participants)
+            self._update_participant_hints(state_update.participant_hints)
+            self._update_mood_and_status(
+                LLMResponseBundle(
+                    text="",
+                    actions=[],
+                    facts=state_update.facts,
+                    participant_hints=state_update.participant_hints,
+                    summary=state_update.summary_update,
+                    mood=state_update.mood,
+                    status=state_update.status,
+                ),
+                source="chat",
+            )
+            self._tracer.log_event("response", {"actions": 0, "batch": len(chats), "chat_output_enabled": False})
+            self._schedule_episode_check()
+            return []
         self._tracer.log_event(
             "llm_prompt_bundle",
             self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),
@@ -998,8 +1050,8 @@ class MessagePipeline:
             "status_ts": format_pacific_time(status_ts),
             "status_seconds_ago": status_seconds_ago,
             "status_source": self._status_source,
-            "last_inbound_ts": self._last_inbound_ts,
-            "last_response_ts": self._last_response_ts,
+            "last_message_received_at": format_pacific_time(self._last_inbound_ts),
+            "last_ai_response_at": format_pacific_time(self._last_response_ts),
             "seconds_since_activity": self.seconds_since_activity(current),
         }
 
@@ -1091,6 +1143,8 @@ class MessagePipeline:
         return filtered
 
     async def generate_autonomous_actions(self, recent_activity_window_seconds: float) -> List[Any]:
+        if not self._llm_chat_enabled:
+            return []
         activity = self.activity_snapshot(recent_activity_window_seconds)
         if activity["seconds_since_activity"] < recent_activity_window_seconds:
             return []
@@ -1227,11 +1281,14 @@ class MessagePipeline:
                 continue
             seen.add(name)
             sender_names.append(name)
+        
+        start_ts = min(timestamps) if timestamps else 0.0
         return {
             "source": "episode_summary",
             "reason": reason,
             "message_count": len(items),
-            "timestamp_start": format_pacific_time(min(timestamps)) if timestamps else "0",
+            "timestamp": start_ts,
+            "timestamp_start": format_pacific_time(start_ts) if start_ts > 0 else "0",
             "timestamp_end": format_pacific_time(max(timestamps)) if timestamps else "0",
             "sender_names": sender_names,
         }
@@ -1248,6 +1305,7 @@ class MessagePipeline:
         return {
             "location": self._environment.location,
             "avatar_position": self._environment.avatar_position,
+            "is_sitting": self._environment.is_sitting,
             "agents": self._environment.agents[: self._max_environment_participants],
             "objects": self._environment.objects[:object_limit],
         }
@@ -1264,8 +1322,8 @@ class MessagePipeline:
     ) -> Dict[str, Any]:
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
         recent_time_range = {
-            "start": min(recent_timestamps) if recent_timestamps else 0.0,
-            "end": max(recent_timestamps) if recent_timestamps else 0.0,
+            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
+            "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
         payload: Dict[str, Any] = {
             "mode": mode,
@@ -1296,7 +1354,13 @@ class MessagePipeline:
                 self._chat_payload(m) for m in overflow
             ]
         if activity is not None:
-            payload["activity"] = activity
+            payload["activity"] = {
+                "seconds_since_activity": activity.get("seconds_since_activity"),
+                "last_message_received_at": format_pacific_time(activity.get("last_inbound_ts")),
+                "last_ai_response_at": format_pacific_time(activity.get("last_response_ts")),
+                "mood": activity.get("mood"),
+                "status": activity.get("status"),
+            }
         return payload
 
     def _persona_instructions(self) -> str:
@@ -1329,6 +1393,22 @@ class MessagePipeline:
             "summary": bundle.summary,
             "mood": bundle.mood,
             "status": bundle.status,
+        }
+
+    @staticmethod
+    def _state_update_payload(update: LLMStateUpdate) -> Dict[str, Any]:
+        return {
+            "facts": [
+                {"user_id": fact.user_id, "name": fact.name, "facts": fact.facts}
+                for fact in update.facts
+            ],
+            "participant_hints": [
+                {"user_id": hint.user_id, "name": hint.name}
+                for hint in update.participant_hints
+            ],
+            "summary_update": update.summary_update,
+            "mood": update.mood,
+            "status": update.status,
         }
 
     @staticmethod

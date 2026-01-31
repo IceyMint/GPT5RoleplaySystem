@@ -31,6 +31,11 @@ class ClientSession:
             if user_id:
                 self.controller.set_user_id(user_id)
             return []
+        if msg_type == "set_llm_chat_enabled":
+            raw_value = data.get("enabled", data.get("value", True))
+            enabled = _parse_bool(raw_value)
+            self.controller.set_llm_chat_enabled(enabled)
+            return []
         if msg_type == "autonomous_tick":
             window = float(data.get("recent_activity_window_seconds", 45.0) or 45.0)
             return await self.controller.generate_autonomous_actions(window)
@@ -92,3 +97,13 @@ class ClientSession:
             finally:
                 for _ in range(processed_count):
                     queue.task_done()
+
+
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
+    return bool(value)
