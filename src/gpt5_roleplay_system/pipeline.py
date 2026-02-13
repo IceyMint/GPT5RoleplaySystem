@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import unicodedata
 from typing import Any, Dict, List, Protocol, Set
 
 from .config import EpisodeConfig, FactsConfig
@@ -661,11 +662,87 @@ class MessagePipeline:
         seen: set[str] = set()
         deduped: List[str] = []
         for item in items:
-            if not item or item in seen:
+            key = MessagePipeline._normalize_fact_key(item)
+            if not key or key in seen:
                 continue
-            seen.add(item)
+            seen.add(key)
             deduped.append(item)
         return deduped
+
+    @staticmethod
+    def _normalize_fact_key(text: str) -> str:
+        if not text:
+            return ""
+        normalized = unicodedata.normalize("NFKC", text).casefold()
+        cleaned = "".join(ch if ch.isalnum() else " " for ch in normalized)
+        return " ".join(cleaned.split())
+
+    @staticmethod
+    def _fact_tokens(text: str, min_len: int = 3) -> set[str]:
+        if not text:
+            return set()
+        normalized = MessagePipeline._normalize_fact_key(text)
+        if not normalized:
+            return set()
+        tokens = {token for token in normalized.split() if len(token) >= min_len}
+        return tokens
+
+    @staticmethod
+    def _fact_similarity(tokens_a: set[str], tokens_b: set[str]) -> float:
+        if not tokens_a or not tokens_b:
+            return 0.0
+        intersection = tokens_a & tokens_b
+        if not intersection:
+            return 0.0
+        union = tokens_a | tokens_b
+        return len(intersection) / max(len(union), 1)
+
+    @staticmethod
+    def _is_near_duplicate(
+        candidate_tokens: set[str],
+        existing_tokens: List[set[str]],
+        threshold: float,
+    ) -> bool:
+        if not candidate_tokens or len(candidate_tokens) < 2:
+            return False
+        for tokens in existing_tokens:
+            if MessagePipeline._fact_similarity(candidate_tokens, tokens) >= threshold:
+                return True
+        return False
+
+    def _people_facts_for_participants(self, participants: List[Participant]) -> Dict[str, Dict[str, Any]]:
+        user_ids = [p.user_id for p in participants if p.user_id]
+        if not user_ids:
+            return {}
+        people = self._knowledge_store.fetch_people(user_ids)
+        now_ts = time.time()
+        people_facts: Dict[str, Dict[str, Any]] = {}
+        for user_id, profile in people.items():
+            facts = self._dedupe_preserve_order(profile.facts)
+            last_seen_ts = float(getattr(profile, "last_seen_ts", 0.0) or 0.0)
+            last_seen_ts = max(last_seen_ts, float(self._last_seen_cache.get(user_id, 0.0) or 0.0))
+            last_seen_seconds_ago = (now_ts - last_seen_ts) if last_seen_ts > 0 else None
+            full_name = self._full_name_for(user_id, getattr(profile, "name", ""))
+            display_name, username = split_display_and_username(full_name)
+            username_value = username or extract_username(getattr(profile, "name", "")) or user_id
+            display_value = (
+                display_name
+                or extract_display_name(getattr(profile, "name", ""))
+                or getattr(profile, "name", "")
+                or username_value
+            )
+            entry: Dict[str, Any] = {
+                "name": username_value,
+                "username": username_value,
+                "display_name": display_value,
+                "full_name": full_name or display_value,
+                "facts": facts,
+                "relationships": profile.relationships,
+                "last_seen_ts": last_seen_ts,
+                "last_seen_seconds_ago": last_seen_seconds_ago,
+            }
+            people_facts[user_id] = entry
+        return people_facts
 
     def _record_display_name(self, user_id: str, full_name: str) -> None:
         if not user_id or not full_name:
@@ -838,7 +915,7 @@ class MessagePipeline:
             user_id=self._user_id,
             environment=self._environment,
             participants=participants,
-            people_facts={},
+            people_facts=self._people_facts_for_participants(participants),
             recent_messages=evidence,
             summary="",
             related_experiences=[],
@@ -947,6 +1024,7 @@ class MessagePipeline:
 
     def _store_facts(self, facts: List[ExtractedFact], participants: List[Participant]) -> Dict[str, int]:
         alias_to_id: Dict[str, str] = {}
+        similarity_threshold = 0.82
         for participant in participants:
             if not participant.user_id:
                 continue
@@ -966,9 +1044,23 @@ class MessagePipeline:
             if not user_id:
                 continue
             profile = self._knowledge_store.fetch_people([user_id]).get(user_id)
-            existing_facts = set(profile.facts) if profile else set()
+            existing_list = list(profile.facts) if profile else []
+            existing_keys = {self._normalize_fact_key(item) for item in existing_list if self._normalize_fact_key(item)}
+            existing_tokens = [self._fact_tokens(item) for item in existing_list]
+            existing_tokens = [tokens for tokens in existing_tokens if tokens]
             deduped_new_facts = self._dedupe_preserve_order(fact.facts)
-            missing_facts = [item for item in deduped_new_facts if item not in existing_facts]
+            missing_facts: List[str] = []
+            for item in deduped_new_facts:
+                key = self._normalize_fact_key(item)
+                if not key or key in existing_keys:
+                    continue
+                tokens = self._fact_tokens(item)
+                if self._is_near_duplicate(tokens, existing_tokens, similarity_threshold):
+                    continue
+                missing_facts.append(item)
+                existing_keys.add(key)
+                if tokens:
+                    existing_tokens.append(tokens)
             name_changed = False
             if fact.name:
                 fact_key = self._normalize_name_for_match(fact.name)

@@ -216,9 +216,8 @@ class RuleBasedLLMClient(LLMClient):
         return True
 
     async def generate_response(self, chat: InboundChat, context: ConversationContext) -> LLMResponse:
-        response_text = f"{chat.sender_name}, I hear you."
-        action = Action(command_type=CommandType.CHAT, content=response_text, parameters={"content": response_text})
-        return LLMResponse(text=response_text, actions=[action])
+        # Silent fallback: avoid immersion-breaking canned acknowledgements.
+        return LLMResponse(text="", actions=[])
 
     async def extract_facts(self, chat: InboundChat, context: ConversationContext) -> List[ExtractedFact]:
         return []
@@ -491,6 +490,7 @@ class OpenRouterLLMClient(LLMClient):
             "# GUIDELINES\n"
             "- Only extract facts explicitly stated in 'evidence_messages' or 'incoming'.\n"
             "- Do not derive facts from 'summary' or 'related_experiences'.\n"
+            "- Use 'people_facts' to avoid duplicates; if a fact already exists or is a close paraphrase, omit it.\n"
             "- Only include facts that are likely to remain true for weeks or months.\n"
             "- If no new durable facts are found, return an empty facts list."
         ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
@@ -542,7 +542,8 @@ class OpenRouterLLMClient(LLMClient):
             "- It is acceptable to return no actions and empty text if no action is appropriate.\n"
             "- Never output internal monologue, private reasoning, or narration about waiting.\n"
             "- When you 'CHAT', speak outwardly to nearby people or the environment.\n"
-            "- Do not refer to yourself in the third person.\n\n"
+            "- Do not refer to yourself in the third person.\n"
+            "\n"
             "# TECHNICAL CONSTRAINTS\n"
             "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
             "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND].\n"
@@ -683,6 +684,7 @@ class OpenRouterLLMClient(LLMClient):
             summary=context.summary,
             summary_meta=context.summary_meta,
             related_experiences=context.related_experiences,
+            people_facts=context.people_facts,
         )
 
     def _request_facts_from_messages(
@@ -694,6 +696,7 @@ class OpenRouterLLMClient(LLMClient):
         summary: str = "",
         summary_meta: Dict[str, Any] | None = None,
         related_experiences: List[Dict[str, Any]] | None = None,
+        people_facts: Dict[str, Any] | None = None,
     ) -> Optional[StructuredFactsOnly]:
         if StructuredFactsOnly is None:
             return None
@@ -713,6 +716,7 @@ class OpenRouterLLMClient(LLMClient):
                         summary=summary,
                         summary_meta=summary_meta or {},
                         related_experiences=related_experiences or [],
+                        people_facts=people_facts or {},
                     ),
                 },
             ],
@@ -741,6 +745,7 @@ class OpenRouterLLMClient(LLMClient):
             summary="",
             summary_meta={},
             related_experiences=[],
+            people_facts=context.people_facts,
         )
         return _facts_from_structured(parsed) if parsed is not None else []
 
@@ -911,6 +916,7 @@ class OpenRouterLLMClient(LLMClient):
         summary: str,
         summary_meta: Dict[str, Any],
         related_experiences: List[Dict[str, Any]],
+        people_facts: Dict[str, Any],
     ) -> str:
         evidence_payload: List[Dict[str, Any]] = []
         for message in evidence_messages[-24:]:
@@ -923,6 +929,7 @@ class OpenRouterLLMClient(LLMClient):
             "participants": [self._participant_payload(p) for p in participants],
             "incoming": self._chat_payload(incoming),
             "evidence_messages": evidence_payload,
+            "people_facts": people_facts,
             # Included for transparency, but the system prompt explicitly forbids using them for facts.
             "summary": summary,
             "summary_meta": summary_meta,

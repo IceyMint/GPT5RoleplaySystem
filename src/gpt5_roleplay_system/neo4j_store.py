@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import unicodedata
 from typing import Any, Dict, List
 
 
@@ -8,11 +9,20 @@ def _dedupe_preserve_order(items: List[str]) -> List[str]:
     seen: set[str] = set()
     deduped: List[str] = []
     for item in items:
-        if not item or item in seen:
+        key = _normalize_fact_key(item)
+        if not key or key in seen:
             continue
-        seen.add(item)
+        seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _normalize_fact_key(text: str) -> str:
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in normalized)
+    return " ".join(cleaned.split())
 
 
 @dataclass
@@ -75,9 +85,13 @@ class InMemoryKnowledgeStore(KnowledgeStore):
     def upsert_person_facts(self, user_id: str, name: str, facts: List[str]) -> None:
         profile = self._people.get(user_id) or PersonProfile(user_id=user_id, name=name)
         profile.name = name or profile.name
+        existing_keys = {_normalize_fact_key(item) for item in profile.facts if _normalize_fact_key(item)}
         for fact in facts:
-            if fact and fact not in profile.facts:
-                profile.facts.append(fact)
+            key = _normalize_fact_key(fact)
+            if not key or key in existing_keys:
+                continue
+            existing_keys.add(key)
+            profile.facts.append(fact)
         self._people[user_id] = profile
 
     def upsert_relationship(self, source_id: str, target_id: str, relationship: str) -> None:
