@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+import gpt5_roleplay_system.server as server_module
 from gpt5_roleplay_system.config import AutonomyConfig, ServerConfig
 from gpt5_roleplay_system.models import Action, CommandType
 from gpt5_roleplay_system.neo4j_store import InMemoryKnowledgeStore
@@ -12,10 +13,17 @@ from gpt5_roleplay_system.session import ClientSession
 class StubController:
     def __init__(self) -> None:
         self.autonomy_windows = []
+        self._llm_chat_enabled = True
 
     async def generate_autonomous_actions(self, window: float):
         self.autonomy_windows.append(window)
         return [Action(command_type=CommandType.EMOTE, content="idle")]
+
+    def set_llm_chat_enabled(self, enabled: bool) -> None:
+        self._llm_chat_enabled = bool(enabled)
+
+    def llm_chat_enabled(self) -> bool:
+        return self._llm_chat_enabled
 
     def activity_snapshot(self, window: float):
         return {
@@ -75,6 +83,86 @@ def test_autonomous_tick_routes_to_pipeline():
     )
     assert controller.autonomy_windows == [33.0]
     assert actions and actions[0].command_type == CommandType.EMOTE
+
+
+def test_set_llm_chat_enabled_defaults_false_when_value_missing():
+    controller = StubController()
+    session = ClientSession(
+        session_id="s-toggle-default",
+        controller=controller,
+        writer=DummyWriter(),
+        batch_window_seconds=0.0,
+        batch_max_size=1,
+    )
+    asyncio.run(session.handle_message("set_llm_chat_enabled", {}))
+    assert controller.llm_chat_enabled() is False
+
+
+def test_set_llm_chat_enabled_true_enables_output():
+    controller = StubController()
+    session = ClientSession(
+        session_id="s-toggle-true",
+        controller=controller,
+        writer=DummyWriter(),
+        batch_window_seconds=0.0,
+        batch_max_size=1,
+    )
+    asyncio.run(session.handle_message("set_llm_chat_enabled", {"enabled": True}))
+    assert controller.llm_chat_enabled() is True
+
+
+def test_connection_starts_with_llm_chat_disabled():
+    class CaptureController:
+        created = []
+
+        def __init__(self, *args, **kwargs) -> None:
+            self.enabled_values = []
+            CaptureController.created.append(self)
+
+        def set_llm_chat_enabled(self, enabled: bool) -> None:
+            self.enabled_values.append(bool(enabled))
+
+        async def flush_state(self) -> None:
+            return None
+
+    class EofReader:
+        def at_eof(self) -> bool:
+            return True
+
+        async def readline(self) -> bytes:
+            return b""
+
+    class EofWriter:
+        def get_extra_info(self, _name):
+            return ("127.0.0.1", 0)
+
+        def close(self) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            return None
+
+    async def run() -> None:
+        original = server_module.SessionController
+        server_module.SessionController = CaptureController  # type: ignore[assignment]
+        try:
+            config = ServerConfig()
+            config.autonomy = AutonomyConfig(enabled=False)
+            server = GPT5RoleplayServer(
+                host="127.0.0.1",
+                port=9999,
+                config=config,
+                knowledge_store=InMemoryKnowledgeStore(),
+                llm_client=StubController(),  # not used by this test path
+                tracer=NoOpTracer(),
+            )
+            await server._handle_client(EofReader(), EofWriter())  # type: ignore[arg-type]
+        finally:
+            server_module.SessionController = original  # type: ignore[assignment]
+
+    asyncio.run(run())
+    assert CaptureController.created
+    assert CaptureController.created[0].enabled_values == [False]
 
 
 def test_status_loop_emits_payload_and_exits_on_disconnect():
@@ -168,3 +256,80 @@ def test_error_logs_broadcast_to_status_channel():
         assert "[error]" in action.content
 
     asyncio.run(run())
+
+
+def test_handle_client_cleanup_survives_worker_failure():
+    class CaptureController:
+        created = []
+
+        def __init__(self, *args, **kwargs) -> None:
+            self.enabled_values = []
+            self.flush_called = False
+            CaptureController.created.append(self)
+
+        def set_llm_chat_enabled(self, enabled: bool) -> None:
+            self.enabled_values.append(bool(enabled))
+
+        async def flush_state(self) -> None:
+            self.flush_called = True
+
+    class BrokenSession:
+        def __init__(self, session_id, controller, writer, batch_window_seconds, batch_max_size) -> None:
+            self.session_id = session_id
+            self.controller = controller
+            self.writer = writer
+
+        async def process_queue(self, _queue) -> None:
+            raise ConnectionError("writer closed")
+
+    class SlowEofReader:
+        def at_eof(self) -> bool:
+            return False
+
+        async def readline(self) -> bytes:
+            await asyncio.sleep(0.02)
+            return b""
+
+    class CaptureWriter:
+        def __init__(self) -> None:
+            self.closed = False
+            self.wait_closed_called = False
+
+        def get_extra_info(self, _name):
+            return ("127.0.0.1", 0)
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            self.wait_closed_called = True
+
+    async def run() -> tuple[GPT5RoleplayServer, CaptureWriter]:
+        original_controller = server_module.SessionController
+        original_session = server_module.ClientSession
+        server_module.SessionController = CaptureController  # type: ignore[assignment]
+        server_module.ClientSession = BrokenSession  # type: ignore[assignment]
+        writer = CaptureWriter()
+        try:
+            config = ServerConfig()
+            config.autonomy = AutonomyConfig(enabled=True, base_delay_seconds=0.01, min_delay_seconds=0.01)
+            server = GPT5RoleplayServer(
+                host="127.0.0.1",
+                port=9999,
+                config=config,
+                knowledge_store=InMemoryKnowledgeStore(),
+                llm_client=StubController(),  # not used by this test path
+                tracer=NoOpTracer(),
+            )
+            await server._handle_client(SlowEofReader(), writer)  # type: ignore[arg-type]
+            return server, writer
+        finally:
+            server_module.SessionController = original_controller  # type: ignore[assignment]
+            server_module.ClientSession = original_session  # type: ignore[assignment]
+
+    server, writer = asyncio.run(run())
+    assert writer.closed is True
+    assert writer.wait_closed_called is True
+    assert not server._sessions
+    assert CaptureController.created
+    assert CaptureController.created[0].flush_called is True

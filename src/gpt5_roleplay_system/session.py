@@ -32,7 +32,7 @@ class ClientSession:
                 self.controller.set_user_id(user_id)
             return []
         if msg_type == "set_llm_chat_enabled":
-            raw_value = data.get("enabled", data.get("value", True))
+            raw_value = data.get("enabled", data.get("value", False))
             enabled = _parse_bool(raw_value)
             self.controller.set_llm_chat_enabled(enabled)
             return []

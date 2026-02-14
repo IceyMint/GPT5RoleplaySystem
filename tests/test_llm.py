@@ -1,4 +1,11 @@
-from gpt5_roleplay_system.llm import OpenRouterLLMClient, StructuredAction, StructuredBundle, _bundle_from_structured
+from gpt5_roleplay_system.llm import (
+    OpenRouterLLMClient,
+    PromptCacheStats,
+    StructuredAction,
+    StructuredBundle,
+    _bundle_from_structured,
+    _extract_prompt_cache_usage,
+)
 from gpt5_roleplay_system.models import ConversationContext, EnvironmentSnapshot
 
 
@@ -84,3 +91,43 @@ def test_system_prompt_includes_persona_instructions():
     prompt = client._system_prompt_for_context(context)
     assert "Persona name: isabella.elara." in prompt
     assert "You are Isabella, a friendly cat." in prompt
+
+
+class _Usage:
+    def __init__(self) -> None:
+        self.prompt_tokens = 120
+        self.completion_tokens = 30
+        self.total_tokens = 150
+        self.prompt_tokens_details = {"cached_tokens": 40, "cache_write_tokens": 10}
+        self.cache_discount = 0.0012
+
+
+class _Completion:
+    def __init__(self) -> None:
+        self.usage = _Usage()
+
+
+def test_extract_prompt_cache_usage_parses_usage_fields():
+    sample = _extract_prompt_cache_usage(_Completion())
+    assert sample is not None
+    assert sample.prompt_tokens == 120
+    assert sample.completion_tokens == 30
+    assert sample.total_tokens == 150
+    assert sample.cached_read_tokens == 40
+    assert sample.cache_write_tokens == 10
+    assert sample.uncached_prompt_tokens == 80
+    assert abs(sample.cache_discount - 0.0012) < 1e-9
+
+
+def test_prompt_cache_stats_aggregates_counts():
+    stats = PromptCacheStats()
+    sample = _extract_prompt_cache_usage(_Completion())
+    stats.record("structured.parse", sample)
+    snapshot = stats.snapshot()
+    assert snapshot["requests_total"] == 1
+    assert snapshot["requests_with_usage"] == 1
+    assert snapshot["cache_hit_requests"] == 1
+    assert snapshot["prompt_tokens"] == 120
+    assert snapshot["cached_read_tokens"] == 40
+    assert snapshot["cache_write_tokens"] == 10
+    assert snapshot["request_type_counts"]["structured.parse"] == 1

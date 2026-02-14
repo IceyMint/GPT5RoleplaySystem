@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 from .time_utils import format_pacific_time
@@ -25,6 +26,189 @@ from .models import Action, CommandType, ConversationContext, EnvironmentSnapsho
 from .name_utils import split_display_and_username
 
 logger = logging.getLogger("gpt5_roleplay_llm")
+
+
+def _field_as_dict(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        if isinstance(dumped, dict):
+            return dumped
+    as_dict = getattr(value, "dict", None)
+    if callable(as_dict):
+        dumped = as_dict()
+        if isinstance(dumped, dict):
+            return dumped
+    data: Dict[str, Any] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_tokens_details", "cache_discount"):
+        if hasattr(value, key):
+            data[key] = getattr(value, key)
+    return data
+
+
+def _field_get(value: Any, key: str, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@dataclass
+class PromptCacheUsageSample:
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cached_read_tokens: int
+    cache_write_tokens: int
+    cache_discount: float
+
+    @property
+    def uncached_prompt_tokens(self) -> int:
+        return max(self.prompt_tokens - self.cached_read_tokens, 0)
+
+
+def _extract_prompt_cache_usage(completion: Any) -> PromptCacheUsageSample | None:
+    usage = _field_get(completion, "usage")
+    usage_map = _field_as_dict(usage)
+    if not usage_map:
+        return None
+
+    prompt_details = _field_get(usage_map, "prompt_tokens_details", {})
+    prompt_details_map = _field_as_dict(prompt_details)
+    input_details = _field_get(usage_map, "input_tokens_details", {})
+    input_details_map = _field_as_dict(input_details)
+
+    prompt_tokens = _to_int(_field_get(usage_map, "prompt_tokens", 0))
+    completion_tokens = _to_int(_field_get(usage_map, "completion_tokens", 0))
+    total_tokens = _to_int(_field_get(usage_map, "total_tokens", prompt_tokens + completion_tokens))
+
+    cached_read_tokens = max(
+        _to_int(_field_get(prompt_details_map, "cached_tokens", 0)),
+        _to_int(_field_get(input_details_map, "cached_tokens", 0)),
+        _to_int(_field_get(usage_map, "cache_read_input_tokens", 0)),
+    )
+    cache_write_tokens = max(
+        _to_int(_field_get(prompt_details_map, "cache_write_tokens", 0)),
+        _to_int(_field_get(input_details_map, "cache_creation_tokens", 0)),
+        _to_int(_field_get(usage_map, "cache_creation_input_tokens", 0)),
+    )
+    cache_discount = _to_float(_field_get(usage_map, "cache_discount", _field_get(completion, "cache_discount", 0.0)))
+
+    return PromptCacheUsageSample(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cached_read_tokens=cached_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_discount=cache_discount,
+    )
+
+
+class PromptCacheStats:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._requests_total = 0
+        self._requests_with_usage = 0
+        self._cache_hit_requests = 0
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
+        self._total_tokens = 0
+        self._cached_read_tokens = 0
+        self._cache_write_tokens = 0
+        self._cache_discount_total = 0.0
+        self._request_type_counts: Dict[str, int] = {}
+
+    def record(self, request_type: str, sample: PromptCacheUsageSample | None) -> None:
+        with self._lock:
+            self._requests_total += 1
+            self._request_type_counts[request_type] = self._request_type_counts.get(request_type, 0) + 1
+            if sample is None:
+                return
+            self._requests_with_usage += 1
+            if sample.cached_read_tokens > 0:
+                self._cache_hit_requests += 1
+            self._prompt_tokens += sample.prompt_tokens
+            self._completion_tokens += sample.completion_tokens
+            self._total_tokens += sample.total_tokens
+            self._cached_read_tokens += sample.cached_read_tokens
+            self._cache_write_tokens += sample.cache_write_tokens
+            self._cache_discount_total += sample.cache_discount
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            prompt_tokens = self._prompt_tokens
+            cached_read_tokens = self._cached_read_tokens
+            uncached_prompt_tokens = max(prompt_tokens - cached_read_tokens, 0)
+            cache_hit_rate = (cached_read_tokens / prompt_tokens) if prompt_tokens else 0.0
+            request_hit_rate = (
+                self._cache_hit_requests / self._requests_with_usage if self._requests_with_usage else 0.0
+            )
+            return {
+                "requests_total": self._requests_total,
+                "requests_with_usage": self._requests_with_usage,
+                "cache_hit_requests": self._cache_hit_requests,
+                "request_hit_rate": request_hit_rate,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": self._completion_tokens,
+                "total_tokens": self._total_tokens,
+                "cached_read_tokens": cached_read_tokens,
+                "cache_write_tokens": self._cache_write_tokens,
+                "uncached_prompt_tokens": uncached_prompt_tokens,
+                "prompt_cache_hit_rate": cache_hit_rate,
+                "cache_discount_total": self._cache_discount_total,
+                "request_type_counts": dict(self._request_type_counts),
+            }
+
+
+_PROMPT_CACHE_STATS = PromptCacheStats()
+
+
+def prompt_cache_stats_snapshot() -> Dict[str, Any]:
+    return _PROMPT_CACHE_STATS.snapshot()
+
+
+def log_prompt_cache_summary() -> None:
+    stats = prompt_cache_stats_snapshot()
+    if stats["requests_total"] == 0:
+        logger.info("Prompt cache summary: no LLM requests were made.")
+        return
+    logger.info(
+        "Prompt cache summary: requests=%d with_usage=%d cache_hit_requests=%d request_hit_rate=%.2f%% "
+        "prompt_tokens=%d cached_read=%d cache_write=%d uncached_prompt=%d prompt_hit_rate=%.2f%% "
+        "completion_tokens=%d total_tokens=%d cache_discount_total=%.6f request_types=%s",
+        stats["requests_total"],
+        stats["requests_with_usage"],
+        stats["cache_hit_requests"],
+        stats["request_hit_rate"] * 100.0,
+        stats["prompt_tokens"],
+        stats["cached_read_tokens"],
+        stats["cache_write_tokens"],
+        stats["uncached_prompt_tokens"],
+        stats["prompt_cache_hit_rate"] * 100.0,
+        stats["completion_tokens"],
+        stats["total_tokens"],
+        stats["cache_discount_total"],
+        stats["request_type_counts"],
+    )
 
 
 @dataclass
@@ -337,6 +521,26 @@ class OpenRouterLLMClient(LLMClient):
         actual_base_url = self._base_url if self._base_url else None
         self._client = OpenAI(api_key=self._api_key, base_url=actual_base_url, timeout=self._timeout)
 
+    def _record_cache_usage(self, request_type: str, completion: Any) -> None:
+        sample = _extract_prompt_cache_usage(completion)
+        _PROMPT_CACHE_STATS.record(request_type, sample)
+        if sample is None:
+            logger.info("LLM usage (%s): usage metadata unavailable", request_type)
+            return
+        logger.info(
+            "LLM usage (%s): prompt=%d completion=%d total=%d cached_read=%d cache_write=%d "
+            "uncached_prompt=%d prompt_hit_rate=%.2f%% cache_discount=%.6f",
+            request_type,
+            sample.prompt_tokens,
+            sample.completion_tokens,
+            sample.total_tokens,
+            sample.cached_read_tokens,
+            sample.cache_write_tokens,
+            sample.uncached_prompt_tokens,
+            ((sample.cached_read_tokens / sample.prompt_tokens) * 100.0) if sample.prompt_tokens else 0.0,
+            sample.cache_discount,
+        )
+
     async def is_addressed_to_me(
         self,
         chat: InboundChat,
@@ -570,6 +774,7 @@ class OpenRouterLLMClient(LLMClient):
         """Execute a structured parse request with fallback cleanup for malformed JSON."""
         try:
             completion = self._client.chat.completions.parse(**kwargs)
+            self._record_cache_usage("structured.parse", completion)
             if not completion.choices:
                 return None
             message = completion.choices[0].message
@@ -580,6 +785,8 @@ class OpenRouterLLMClient(LLMClient):
             raw_text = None
             # Check for truncation or content filter in API error
             completion = getattr(exc, "completion", None)
+            if completion is not None:
+                self._record_cache_usage("structured.parse_error", completion)
             if completion and completion.choices:
                 raw_text = completion.choices[0].message.content
 
@@ -589,6 +796,7 @@ class OpenRouterLLMClient(LLMClient):
                 try:
                     debug_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
                     debug_completion = self._client.chat.completions.create(**debug_kwargs)
+                    self._record_cache_usage("structured.debug_create", debug_completion)
                     raw_text = debug_completion.choices[0].message.content
                 except Exception as debug_exc:
                     logger.error("Failed to fetch raw text for cleanup: %s", debug_exc)
@@ -765,6 +973,7 @@ class OpenRouterLLMClient(LLMClient):
                 "reasoning_effort": self._reasoning,
             }
         completion = self._client.chat.completions.create(**kwargs)
+        self._record_cache_usage("text.create", completion)
         if not completion.choices:
             return ""
         message = completion.choices[0].message
@@ -793,10 +1002,70 @@ class OpenRouterLLMClient(LLMClient):
                 "reasoning_effort": self._reasoning,
             }
         completion = self._client.chat.completions.create(**kwargs)
+        self._record_cache_usage("text_with_model.create", completion)
         if not completion.choices:
             return ""
         message = completion.choices[0].message
         return message.content or ""
+
+    @staticmethod
+    def _serialize_payload(payload: Dict[str, Any]) -> str:
+        # Compact deterministic JSON reduces token count and keeps prefix matching stable.
+        return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+    @classmethod
+    def _canonicalize_for_prompt(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            canonical: Dict[Any, Any] = {}
+            for key in sorted(value.keys(), key=lambda item: str(item)):
+                canonical[key] = cls._canonicalize_for_prompt(value[key])
+            return canonical
+        if isinstance(value, list):
+            return [cls._canonicalize_for_prompt(item) for item in value]
+        return value
+
+    @classmethod
+    def _stable_participants_payload(cls, participants: List[Participant]) -> List[Dict[str, Any]]:
+        payload = [cls._participant_payload(participant) for participant in participants]
+        return sorted(
+            payload,
+            key=lambda item: (
+                str(item.get("user_id") or ""),
+                str(item.get("username") or ""),
+                str(item.get("display_name") or ""),
+            ),
+        )
+
+    @classmethod
+    def _stable_entity_list(cls, entries: List[Any]) -> List[Any]:
+        canonical = [cls._canonicalize_for_prompt(entry) for entry in entries]
+
+        def entity_sort_key(item: Any) -> str:
+            if isinstance(item, dict):
+                stable_json = json.dumps(
+                    item,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    default=str,
+                )
+                return "|".join(
+                    [
+                        str(item.get("uuid") or item.get("target_uuid") or ""),
+                        str(item.get("name") or ""),
+                        str(item.get("display_name") or ""),
+                        stable_json,
+                    ]
+                )
+            return json.dumps(
+                item,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            )
+
+        return sorted(canonical, key=entity_sort_key)
 
     def _format_address_check(
         self,
@@ -808,10 +1077,10 @@ class OpenRouterLLMClient(LLMClient):
     ) -> str:
         env_block = {
             "location": environment.location if environment else "",
-            "avatar_position": environment.avatar_position if environment else "",
             "is_sitting": environment.is_sitting if environment else False,
             "nearby_agents": [],
             "nearby_objects": [],
+            "avatar_position": environment.avatar_position if environment else "",
         }
         if environment:
             for agent in environment.agents[:6]:
@@ -822,13 +1091,14 @@ class OpenRouterLLMClient(LLMClient):
                 name = str(obj.get("name", ""))
                 if name:
                     env_block["nearby_objects"].append(name)
+            env_block["nearby_agents"].sort(key=str.casefold)
+            env_block["nearby_objects"].sort(key=str.casefold)
 
         participant_names: List[str] = []
         participant_details: List[Dict[str, Any]] = []
         if participants:
-            for participant in participants:
-                detail = self._participant_payload(participant)
-                participant_details.append(detail)
+            participant_details = self._stable_participants_payload(participants)
+            for detail in participant_details:
                 if detail["username"]:
                     participant_names.append(detail["username"])
 
@@ -847,21 +1117,21 @@ class OpenRouterLLMClient(LLMClient):
         }
 
         payload = {
-            "now_timestamp": format_pacific_time(),
             "persona": persona,
-            "sender_name": chat.sender_name,
-            "sender_id": chat.sender_id,
-            "incoming": self._chat_payload(chat),
             "participants": participant_names[:8],
             "participants_detail": participant_details[:8],
             "environment": env_block,
             "summary": summary,
-            "summary_meta": context.summary_meta if context else {},
-            "agent_state": context.agent_state if context else {},
+            "summary_meta": self._canonicalize_for_prompt(context.summary_meta if context else {}),
+            "agent_state": self._canonicalize_for_prompt(context.agent_state if context else {}),
             "recent_time_range": recent_time_range,
             "recent_messages": recent_messages,
+            "sender_name": chat.sender_name,
+            "sender_id": chat.sender_id,
+            "incoming": self._chat_payload(chat),
+            "now_timestamp": format_pacific_time(),
         }
-        return json.dumps(payload, ensure_ascii=True)
+        return self._serialize_payload(payload)
 
     def _format_context(
         self,
@@ -875,37 +1145,34 @@ class OpenRouterLLMClient(LLMClient):
             "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
             "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
+        participants_payload = self._stable_participants_payload(context.participants)
         now = time.time()
         payload = {
-            "now_timestamp": format_pacific_time(now),
-            "current_time_iso": format_pacific_time(now),
             "persona": context.persona,
             "user_id": context.user_id,
-            "participants": [self._participant_payload(p) for p in context.participants],
+            "persona_instructions": context.persona_instructions,
+            "participants": participants_payload,
             "environment": {
                 "location": context.environment.location,
-                "avatar_position": context.environment.avatar_position,
                 "is_sitting": context.environment.is_sitting,
-                "agents": context.environment.agents,
-                "objects": context.environment.objects,
+                "objects": self._stable_entity_list(context.environment.objects),
+                "agents": self._stable_entity_list(context.environment.agents),
+                "avatar_position": context.environment.avatar_position,
             },
-            "people_facts": context.people_facts,
+            "people_facts": self._canonicalize_for_prompt(context.people_facts),
             "summary": context.summary,
-            "summary_meta": context.summary_meta,
-            "agent_state": context.agent_state,
-            "persona_instructions": context.persona_instructions,
+            "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
+            "agent_state": self._canonicalize_for_prompt(context.agent_state),
+            "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
             "recent_time_range": recent_time_range,
-            "recent_messages": [
-                self._chat_payload(m) for m in context.recent_messages
-            ],
-            "related_experiences": context.related_experiences,
+            "recent_messages": [self._chat_payload(m) for m in context.recent_messages],
+            "overflow_messages": [self._chat_payload(m) for m in (overflow or [])],
+            "incoming_batch": self._canonicalize_for_prompt(incoming_batch or []),
             "incoming": self._chat_payload(chat),
-            "overflow_messages": [
-                self._chat_payload(m) for m in (overflow or [])
-            ],
-            "incoming_batch": incoming_batch or [],
+            "now_timestamp": format_pacific_time(now),
+            "current_time_iso": format_pacific_time(now),
         }
-        return json.dumps(payload, ensure_ascii=True)
+        return self._serialize_payload(payload)
 
     def _format_facts_context_from_messages(
         self,
@@ -923,20 +1190,20 @@ class OpenRouterLLMClient(LLMClient):
             evidence_payload.append(self._chat_payload(message))
         incoming = evidence_messages[-1]
         payload = {
-            "now_timestamp": format_pacific_time(),
             "persona": persona,
             "user_id": user_id,
-            "participants": [self._participant_payload(p) for p in participants],
-            "incoming": self._chat_payload(incoming),
-            "evidence_messages": evidence_payload,
-            "people_facts": people_facts,
+            "participants": self._stable_participants_payload(participants),
+            "people_facts": self._canonicalize_for_prompt(people_facts),
             # Included for transparency, but the system prompt explicitly forbids using them for facts.
             "summary": summary,
-            "summary_meta": summary_meta,
-            "related_experiences": related_experiences,
+            "summary_meta": self._canonicalize_for_prompt(summary_meta),
+            "related_experiences": self._canonicalize_for_prompt(related_experiences),
             "persona_instructions": "",
+            "evidence_messages": evidence_payload,
+            "incoming": self._chat_payload(incoming),
+            "now_timestamp": format_pacific_time(),
         }
-        return json.dumps(payload, ensure_ascii=True)
+        return self._serialize_payload(payload)
 
     def _format_autonomous_context(self, context: ConversationContext, activity: Dict[str, Any]) -> str:
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
@@ -944,13 +1211,28 @@ class OpenRouterLLMClient(LLMClient):
             "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
             "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
+        participants_payload = self._stable_participants_payload(context.participants)
         now = time.time()
         payload = {
             "mode": "autonomous",
-            "now_timestamp": format_pacific_time(now),
-            "current_time_iso": format_pacific_time(now),
             "persona": context.persona,
             "user_id": context.user_id,
+            "persona_instructions": context.persona_instructions,
+            "participants": participants_payload,
+            "environment": {
+                "location": context.environment.location,
+                "is_sitting": context.environment.is_sitting,
+                "objects": self._stable_entity_list(context.environment.objects),
+                "agents": self._stable_entity_list(context.environment.agents),
+                "avatar_position": context.environment.avatar_position,
+            },
+            "people_facts": self._canonicalize_for_prompt(context.people_facts),
+            "summary": context.summary,
+            "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
+            "agent_state": self._canonicalize_for_prompt(context.agent_state),
+            "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
+            "recent_time_range": recent_time_range,
+            "recent_messages": [self._chat_payload(m) for m in context.recent_messages],
             "activity": {
                 "seconds_since_activity": activity.get("seconds_since_activity"),
                 "last_message_received_at": format_pacific_time(activity.get("last_inbound_ts")),
@@ -958,26 +1240,10 @@ class OpenRouterLLMClient(LLMClient):
                 "mood": activity.get("mood"),
                 "status": activity.get("status"),
             },
-            "participants": [self._participant_payload(p) for p in context.participants],
-            "environment": {
-                "location": context.environment.location,
-                "avatar_position": context.environment.avatar_position,
-                "is_sitting": context.environment.is_sitting,
-                "agents": context.environment.agents,
-                "objects": context.environment.objects,
-            },
-            "people_facts": context.people_facts,
-            "summary": context.summary,
-            "summary_meta": context.summary_meta,
-            "agent_state": context.agent_state,
-            "persona_instructions": context.persona_instructions,
-            "recent_time_range": recent_time_range,
-            "recent_messages": [
-                self._chat_payload(m) for m in context.recent_messages
-            ],
-            "related_experiences": context.related_experiences,
+            "now_timestamp": format_pacific_time(now),
+            "current_time_iso": format_pacific_time(now),
         }
-        return json.dumps(payload, ensure_ascii=True)
+        return self._serialize_payload(payload)
 
     @staticmethod
     def _chat_payload(chat: InboundChat) -> Dict[str, Any]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 import unicodedata
 from typing import Any, Dict, List
 
@@ -253,6 +254,8 @@ class Neo4jKnowledgeStore(KnowledgeStore):
         name = name or ""
         name_lower = name.strip().lower()
         facts = _dedupe_preserve_order([fact for fact in facts if fact])
+        has_new_facts = bool(facts)
+        facts_updated_ts = time.time() if has_new_facts else 0.0
         alias_values = [name] if name else []
         claim_by_name = """
         MATCH (p:Person {name_lower: $name_lower})
@@ -263,7 +266,12 @@ class Neo4jKnowledgeStore(KnowledgeStore):
             p.aliases = reduce(acc = [], x IN coalesce(p.aliases, []) + $aliases |
                 CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END),
             p.facts = reduce(acc = [], x IN coalesce(p.facts, []) + $facts |
-                CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END)
+                CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END),
+            p.needs_dedupe = CASE WHEN $has_new_facts THEN true ELSE coalesce(p.needs_dedupe, false) END,
+            p.facts_updated_ts = CASE
+                WHEN $has_new_facts THEN $facts_updated_ts
+                ELSE coalesce(p.facts_updated_ts, 0.0)
+            END
         RETURN p
         """
         merge_by_id = """
@@ -273,7 +281,12 @@ class Neo4jKnowledgeStore(KnowledgeStore):
             p.aliases = reduce(acc = [], x IN coalesce(p.aliases, []) + $aliases |
                 CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END),
             p.facts = reduce(acc = [], x IN coalesce(p.facts, []) + $facts |
-                CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END)
+                CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END),
+            p.needs_dedupe = CASE WHEN $has_new_facts THEN true ELSE coalesce(p.needs_dedupe, false) END,
+            p.facts_updated_ts = CASE
+                WHEN $has_new_facts THEN $facts_updated_ts
+                ELSE coalesce(p.facts_updated_ts, 0.0)
+            END
         """
         with self._session() as session:
             if user_id and name_lower:
@@ -284,6 +297,8 @@ class Neo4jKnowledgeStore(KnowledgeStore):
                     name_lower=name_lower,
                     aliases=alias_values,
                     facts=facts,
+                    has_new_facts=has_new_facts,
+                    facts_updated_ts=facts_updated_ts,
                 )
                 if result.peek() is not None:
                     return
@@ -294,6 +309,8 @@ class Neo4jKnowledgeStore(KnowledgeStore):
                 name_lower=name_lower,
                 aliases=alias_values,
                 facts=facts,
+                has_new_facts=has_new_facts,
+                facts_updated_ts=facts_updated_ts,
             )
 
     def upsert_relationship(self, source_id: str, target_id: str, relationship: str) -> None:

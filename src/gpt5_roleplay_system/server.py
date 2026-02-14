@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import json
 import logging
 import os
+import re
+import time
 from typing import Dict, Optional
 
 from .config import AutonomyConfig, ServerConfig, load_config
 from .controller import SessionController
 from .experience_vector import ExperienceVectorIndex, NullEmbeddingClient, OpenAIEmbeddingClient
-from .llm import OpenRouterLLMClient, RuleBasedLLMClient
+from .llm import OpenRouterLLMClient, RuleBasedLLMClient, log_prompt_cache_summary
 from .models import Action, CommandType
 from .neo4j_experience_vector import Neo4jExperienceVectorIndex, Neo4jVectorConfig
 from .neo4j_store import InMemoryKnowledgeStore, Neo4jKnowledgeStore, KnowledgeStore
@@ -103,6 +106,8 @@ class GPT5RoleplayServer:
             episode_config=self._config.episode,
             persona_profiles=self._config.persona_profiles,
         )
+        # Start each new connection with chat output disabled until explicitly enabled.
+        controller.set_llm_chat_enabled(False)
         session = ClientSession(
             session_id=session_id,
             controller=controller,
@@ -127,8 +132,19 @@ class GPT5RoleplayServer:
             dedup_task = asyncio.create_task(_facts_deduplication_loop(self._config, self._knowledge_store, self._llm_client))
 
         try:
-            while not reader.at_eof():
-                line = await reader.readline()
+            while True:
+                if worker.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        worker_error = worker.exception()
+                        if worker_error and not isinstance(worker_error, ConnectionError):
+                            logger.warning("Session worker failed for %s: %s", session_id, worker_error)
+                    break
+                if reader.at_eof():
+                    break
+                try:
+                    line = await asyncio.wait_for(reader.readline(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
                 if not line:
                     break
                 try:
@@ -138,15 +154,10 @@ class GPT5RoleplayServer:
                     continue
                 await self._enqueue_message(queue, session_id, message.msg_type, message.data)
         finally:
-            worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await worker
-            for task in (autonomy_task, status_task, dedup_task):
-                if task is None:
-                    continue
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            await _cancel_task(worker, session_id=session_id, label="worker")
+            await _cancel_task(autonomy_task, session_id=session_id, label="autonomy")
+            await _cancel_task(status_task, session_id=session_id, label="status")
+            await _cancel_task(dedup_task, session_id=session_id, label="facts_deduplication")
             with contextlib.suppress(Exception):
                 await session.controller.flush_state()
             writer.close()
@@ -231,7 +242,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=9999)
     parser.add_argument("--config", default=None)
     args = parser.parse_args()
-    asyncio.run(run_server(args.host, args.port, args.config))
+    try:
+        asyncio.run(run_server(args.host, args.port, args.config))
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested via Ctrl+C.")
+    finally:
+        log_prompt_cache_summary()
 
 
 def _build_knowledge_store(config: ServerConfig) -> KnowledgeStore:
@@ -409,19 +425,50 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
 
     driver = knowledge_store.driver
     database = knowledge_store.database
+    runtime_key = "facts_deduplication"
+    with contextlib.suppress(Exception):
+        with driver.session(database=database) as session:
+            session.run(
+                "MERGE (m:SystemRuntime {name: $name}) "
+                "SET m.status = coalesce(m.status, 'idle'), "
+                "    m.initialized_ts = coalesce(m.initialized_ts, $initialized_ts)",
+                name=runtime_key,
+                initialized_ts=time.time(),
+            )
 
     while True:
         await asyncio.sleep(interval_seconds)
         logger.info("Starting periodic facts deduplication...")
+        run_started_ts = time.time()
+        candidate_count = 0
+        processed_count = 0
+        changed_count = 0
+        unchanged_count = 0
+        failed_count = 0
         try:
             with driver.session(database=database) as session:
-                result = session.run("MATCH (p:Person) WHERE size(p.facts) > 1 RETURN p.user_id as user_id, p.name as name, p.facts as facts")
+                session.run(
+                    "MERGE (m:SystemRuntime {name: $name}) "
+                    "SET m.status = 'running', "
+                    "    m.last_started_ts = $last_started_ts, "
+                    "    m.last_error = ''",
+                    name=runtime_key,
+                    last_started_ts=run_started_ts,
+                )
+            with driver.session(database=database) as session:
+                result = session.run(
+                    "MATCH (p:Person) "
+                    "WHERE size(coalesce(p.facts, [])) > 1 AND coalesce(p.needs_dedupe, false) = true "
+                    "RETURN p.user_id as user_id, p.name as name, p.facts as facts"
+                )
                 people = list(result)
+                candidate_count = len(people)
 
+            logger.info("Facts dedupe candidates: %d", candidate_count)
             for person in people:
                 user_id = person["user_id"]
                 name = person["name"]
-                facts = person["facts"]
+                facts = [item for item in (person["facts"] or []) if isinstance(item, str) and item.strip()]
 
                 prompt = (
                     "You are a data cleaning expert. Refine these facts about a person, removing redundancy and duplicates. "
@@ -430,34 +477,123 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
                 )
 
                 try:
-                    import json
                     response_text = await asyncio.to_thread(llm_client._request_text, "You are a precision data cleaner.", prompt)
 
-                    import re
                     clean_text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", response_text, flags=re.DOTALL)
                     start = clean_text.find("{")
                     end = clean_text.rfind("}")
                     if start != -1 and end != -1:
-                        clean_text = clean_text[start:end+1]
+                        clean_text = clean_text[start : end + 1]
 
                     data = json.loads(clean_text)
-                    refined_facts = data.get("facts", [])
+                    refined_raw = data.get("facts", [])
+                    if not isinstance(refined_raw, list):
+                        raise ValueError("facts must be a list")
+                    seen: set[str] = set()
+                    refined_facts: list[str] = []
+                    for item in refined_raw:
+                        if not isinstance(item, str):
+                            continue
+                        text = item.strip()
+                        if not text or text in seen:
+                            continue
+                        seen.add(text)
+                        refined_facts.append(text)
+                    deduped_ts = time.time()
 
                     if refined_facts and refined_facts != facts:
-                        logger.info(f"Deduplicated facts for {name} ({user_id}): {len(facts)} -> {len(refined_facts)}")
+                        logger.info(
+                            "Deduplicated facts for %s (%s): %d -> %d",
+                            name,
+                            user_id,
+                            len(facts),
+                            len(refined_facts),
+                        )
+                        changed_count += 1
                         with driver.session(database=database) as session:
                             session.run(
-                                "MATCH (p:Person {user_id: $user_id}) SET p.facts = $facts",
+                                "MATCH (p:Person {user_id: $user_id}) "
+                                "SET p.facts = $facts, "
+                                "    p.needs_dedupe = false, "
+                                "    p.facts_deduped_ts = $facts_deduped_ts",
                                 user_id=user_id,
-                                facts=refined_facts
+                                facts=refined_facts,
+                                facts_deduped_ts=deduped_ts,
                             )
+                    else:
+                        unchanged_count += 1
+                        with driver.session(database=database) as session:
+                            session.run(
+                                "MATCH (p:Person {user_id: $user_id}) "
+                                "SET p.needs_dedupe = false, "
+                                "    p.facts_deduped_ts = $facts_deduped_ts",
+                                user_id=user_id,
+                                facts_deduped_ts=deduped_ts,
+                            )
+                    processed_count += 1
                 except Exception as e:
-                    logger.error(f"Failed to deduplicate facts for {name}: {e}")
+                    failed_count += 1
+                    logger.error("Failed to deduplicate facts for %s (%s): %s", name, user_id, e)
                     continue
 
+            run_completed_ts = time.time()
+            with driver.session(database=database) as session:
+                session.run(
+                    "MERGE (m:SystemRuntime {name: $name}) "
+                    "SET m.status = 'success', "
+                    "    m.last_completed_ts = $last_completed_ts, "
+                    "    m.last_candidate_count = $last_candidate_count, "
+                    "    m.last_processed_count = $last_processed_count, "
+                    "    m.last_changed_count = $last_changed_count, "
+                    "    m.last_unchanged_count = $last_unchanged_count, "
+                    "    m.last_failed_count = $last_failed_count, "
+                    "    m.last_error = ''",
+                    name=runtime_key,
+                    last_completed_ts=run_completed_ts,
+                    last_candidate_count=int(candidate_count),
+                    last_processed_count=int(processed_count),
+                    last_changed_count=int(changed_count),
+                    last_unchanged_count=int(unchanged_count),
+                    last_failed_count=int(failed_count),
+                )
             logger.info("Periodic facts deduplication complete.")
         except Exception as e:
-            logger.error(f"Error in facts deduplication loop: {e}")
+            run_failed_ts = time.time()
+            with contextlib.suppress(Exception):
+                with driver.session(database=database) as session:
+                    session.run(
+                        "MERGE (m:SystemRuntime {name: $name}) "
+                        "SET m.status = 'error', "
+                        "    m.last_failed_ts = $last_failed_ts, "
+                        "    m.last_candidate_count = $last_candidate_count, "
+                        "    m.last_processed_count = $last_processed_count, "
+                        "    m.last_changed_count = $last_changed_count, "
+                        "    m.last_unchanged_count = $last_unchanged_count, "
+                        "    m.last_failed_count = $last_failed_count, "
+                        "    m.last_error = $last_error",
+                        name=runtime_key,
+                        last_failed_ts=run_failed_ts,
+                        last_candidate_count=int(candidate_count),
+                        last_processed_count=int(processed_count),
+                        last_changed_count=int(changed_count),
+                        last_unchanged_count=int(unchanged_count),
+                        last_failed_count=int(failed_count),
+                        last_error=str(e),
+                    )
+            logger.error("Error in facts deduplication loop: %s", e)
+
+
+async def _cancel_task(task: asyncio.Task | None, *, session_id: str, label: str) -> None:
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, ConnectionError):
+        return
+    except Exception as exc:
+        logger.warning("Task %s failed for %s during shutdown: %s", label, session_id, exc)
 
 
 def _format_error_text(record: logging.LogRecord, message: str, max_len: int = 280) -> str:
