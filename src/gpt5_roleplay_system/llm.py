@@ -239,6 +239,8 @@ class LLMResponseBundle:
     summary: str | None = None
     mood: str | None = None
     status: str | None = None
+    autonomy_decision: str | None = None
+    next_delay_seconds: float | None = None
 
 
 @dataclass
@@ -248,6 +250,8 @@ class LLMStateUpdate:
     summary_update: str | None = None
     mood: str | None = None
     status: str | None = None
+    autonomy_decision: str | None = None
+    next_delay_seconds: float | None = None
 
 
 if BaseModel is not None:
@@ -279,6 +283,11 @@ if BaseModel is not None:
         summary_update: Optional[str] = None
         mood: Optional[str] = None
         status: Optional[str] = None
+        autonomy_decision: Optional[str] = Field(
+            default=None,
+            validation_alias=AliasChoices("autonomy_decision", "decision"),
+        )
+        next_delay_seconds: Optional[float] = None
 
     class StructuredStateUpdate(BaseModel):
         participant_hints: List[StructuredParticipantHint] = Field(default_factory=list)
@@ -286,6 +295,11 @@ if BaseModel is not None:
         summary_update: Optional[str] = None
         mood: Optional[str] = None
         status: Optional[str] = None
+        autonomy_decision: Optional[str] = Field(
+            default=None,
+            validation_alias=AliasChoices("autonomy_decision", "decision"),
+        )
+        next_delay_seconds: Optional[float] = None
 
     class StructuredFactsOnly(BaseModel):
         facts: List[StructuredFact] = Field(default_factory=list)
@@ -352,6 +366,8 @@ class LLMClient:
             summary_update=None,
             mood=None,
             status=None,
+            autonomy_decision=None,
+            next_delay_seconds=None,
         )
 
     async def generate_autonomous_bundle(
@@ -667,7 +683,9 @@ class OpenRouterLLMClient(LLMClient):
             "# MEMORY & KNOWLEDGE\n"
             "- Use 'related_experiences' to inform your behavior based on past events.\n"
             "- Update 'summary_update' if 'overflow_messages' are present to compress older context.\n"
-            "- Suggest 'participant_hints' for new or important individuals mentioned in the chat."
+            "- Suggest 'participant_hints' for new or important individuals mentioned in the chat.\n"
+            "- Optional scheduler override: you may set 'autonomy_decision' ([act, wait, sleep]) and "
+            "'next_delay_seconds' to adjust future autonomous cadence after this interaction."
         ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting (like ```json) outside the JSON object."
 
     def _system_prompt_for_context(self, context: ConversationContext) -> str:
@@ -707,7 +725,9 @@ class OpenRouterLLMClient(LLMClient):
             "- Update mood and status based on the latest interaction.\n"
             "- If 'overflow_messages' are present, provide a concise 'summary_update' to compress older context.\n"
             "- Optionally provide participant_hints for notable individuals.\n"
-            "- Optionally extract durable person facts (names, relationships, long-term preferences).\n\n"
+            "- Optionally extract durable person facts (names, relationships, long-term preferences).\n"
+            "- Optional scheduler override: set 'autonomy_decision' ([act, wait, sleep]) and "
+            "'next_delay_seconds' to influence future autonomous cadence.\n\n"
             "# CONSTRAINTS\n"
             "- DO NOT output chat text.\n"
             "- DO NOT output actions.\n"
@@ -753,7 +773,12 @@ class OpenRouterLLMClient(LLMClient):
             "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND].\n"
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
-            "- Include mood (short label) and status (brief current activity) when you take action."
+            "- Include 'autonomy_decision' as one of [act, wait, sleep].\n"
+            "- 'act': emit one or more actions.\n"
+            "- 'wait': emit no actions and choose a suitable 'next_delay_seconds'.\n"
+            "- 'sleep': emit no actions and choose a longer 'next_delay_seconds'.\n"
+            "- Include 'next_delay_seconds' whenever possible so the scheduler can pick a natural next check.\n"
+            "- Include mood (short label) and status (brief current activity)."
         ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
 
     def _autonomous_system_prompt_for_context(self, context: ConversationContext) -> str:
@@ -1308,6 +1333,16 @@ def _bundle_from_structured(parsed: StructuredBundle, mode: str = "chat") -> LLM
     summary = summary_update.strip() if isinstance(summary_update, str) and summary_update.strip() else None
     mood = getattr(parsed, "mood", None)
     status = getattr(parsed, "status", None)
+    raw_decision = getattr(parsed, "autonomy_decision", None)
+    if raw_decision is None:
+        raw_decision = getattr(parsed, "decision", None)
+    decision = _normalize_autonomy_decision(raw_decision)
+    next_delay_seconds = _optional_positive_float(getattr(parsed, "next_delay_seconds", None))
+    if mode == "autonomous":
+        if actions:
+            decision = "act"
+        elif decision is None:
+            decision = "wait"
 
     return LLMResponseBundle(
         text=text,
@@ -1317,6 +1352,8 @@ def _bundle_from_structured(parsed: StructuredBundle, mode: str = "chat") -> LLM
         summary=summary,
         mood=mood.strip() if isinstance(mood, str) and mood.strip() else None,
         status=status.strip() if isinstance(status, str) and status.strip() else None,
+        autonomy_decision=decision,
+        next_delay_seconds=next_delay_seconds,
     )
 
 
@@ -1334,12 +1371,19 @@ def _state_update_from_structured(parsed: StructuredStateUpdate) -> LLMStateUpda
     summary = summary_update.strip() if isinstance(summary_update, str) and summary_update.strip() else None
     mood = getattr(parsed, "mood", None)
     status = getattr(parsed, "status", None)
+    raw_decision = getattr(parsed, "autonomy_decision", None)
+    if raw_decision is None:
+        raw_decision = getattr(parsed, "decision", None)
+    decision = _normalize_autonomy_decision(raw_decision)
+    next_delay_seconds = _optional_positive_float(getattr(parsed, "next_delay_seconds", None))
     return LLMStateUpdate(
         facts=facts,
         participant_hints=hints,
         summary_update=summary,
         mood=mood.strip() if isinstance(mood, str) and mood.strip() else None,
         status=status.strip() if isinstance(status, str) and status.strip() else None,
+        autonomy_decision=decision,
+        next_delay_seconds=next_delay_seconds,
     )
 
 
@@ -1508,3 +1552,22 @@ def _parse_bool_response(response: str) -> bool:
     if "false" in cleaned:
         return False
     return True
+
+
+def _normalize_autonomy_decision(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    decision = value.strip().lower()
+    if decision in {"act", "wait", "sleep"}:
+        return decision
+    return None
+
+
+def _optional_positive_float(value: Any) -> float | None:
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if candidate <= 0.0:
+        return None
+    return candidate

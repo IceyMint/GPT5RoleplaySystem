@@ -7,6 +7,7 @@ from gpt5_roleplay_system.llm import (
     LLMClient,
     LLMResponse,
     LLMResponseBundle,
+    LLMStateUpdate,
     ParticipantHint,
 )
 from gpt5_roleplay_system.memory import ConversationMemory, ExperienceStore, RollingBuffer, SimpleMemoryCompressor
@@ -96,6 +97,8 @@ class AutonomyTextOnlyLLM(LLMClient):
             summary=None,
             mood="patient",
             status="waiting",
+            autonomy_decision="wait",
+            next_delay_seconds=900.0,
         )
 
 
@@ -122,6 +125,48 @@ class OverflowTypeLLM(LLMClient):
             facts=[],
             participant_hints=[],
             summary=None,
+        )
+
+
+class IncomingSchedulerHintLLM(LLMClient):
+    async def is_addressed_to_me(self, chat, persona, environment=None, participants=None, context=None) -> bool:
+        return True
+
+    async def generate_response(self, chat, context) -> LLMResponse:  # pragma: no cover - unused
+        raise NotImplementedError
+
+    async def extract_facts(self, chat, context) -> list[ExtractedFact]:  # pragma: no cover - unused
+        return []
+
+    async def summarize(self, summary, messages) -> str:  # pragma: no cover - unused
+        return summary
+
+    async def generate_bundle(self, chat, context, overflow=None, incoming_batch=None) -> LLMResponseBundle:
+        return LLMResponseBundle(
+            text="",
+            actions=[],
+            facts=[],
+            participant_hints=[],
+            summary=None,
+            autonomy_decision="sleep",
+            next_delay_seconds=3600.0,
+        )
+
+    async def generate_state_update(
+        self,
+        chat,
+        context,
+        overflow=None,
+        incoming_batch=None,
+    ) -> LLMStateUpdate:
+        return LLMStateUpdate(
+            facts=[],
+            participant_hints=[],
+            summary_update=None,
+            mood="quiet",
+            status="resting",
+            autonomy_decision="wait",
+            next_delay_seconds=1200.0,
         )
 
 
@@ -299,6 +344,63 @@ def test_autonomy_text_only_does_not_add_ai_messages():
     assert actions == []
     assert pipeline._memory.recent() == []
     assert pipeline._rolling_buffer.items() == []
+    assert pipeline.consume_autonomy_delay_hint_seconds() == 900.0
+    assert pipeline.consume_autonomy_delay_hint_seconds() is None
+
+
+def test_chat_bundle_can_override_autonomy_scheduler_hint():
+    pipeline = MessagePipeline(
+        persona="Isabella",
+        user_id="ai-1",
+        llm=IncomingSchedulerHintLLM(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+    )
+
+    actions = asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Sleep well tonight.",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 10.0,
+            }
+        )
+    )
+    assert actions == []
+    assert pipeline.activity_snapshot(1.0)["autonomy_decision"] == "sleep"
+    assert pipeline.consume_autonomy_delay_hint_seconds() == 3600.0
+
+
+def test_state_update_can_override_autonomy_scheduler_hint():
+    pipeline = MessagePipeline(
+        persona="Isabella",
+        user_id="ai-1",
+        llm=IncomingSchedulerHintLLM(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+    )
+    pipeline.set_llm_chat_enabled(False)
+
+    actions = asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "No need to reply, just rest.",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 20.0,
+            }
+        )
+    )
+    assert actions == []
+    assert pipeline.activity_snapshot(1.0)["autonomy_decision"] == "wait"
+    assert pipeline.consume_autonomy_delay_hint_seconds() == 1200.0
 
 
 def test_autonomy_filter_uses_persona_name_not_uuid():

@@ -112,6 +112,9 @@ class SessionController:
     async def generate_autonomous_actions(self, recent_activity_window_seconds: float) -> List[Action]:
         return await self._pipeline.generate_autonomous_actions(recent_activity_window_seconds)
 
+    def consume_autonomy_delay_hint_seconds(self) -> float | None:
+        return self._pipeline.consume_autonomy_delay_hint_seconds()
+
     def activity_snapshot(self, recent_activity_window_seconds: float) -> Dict[str, Any]:
         return self._pipeline.activity_snapshot(recent_activity_window_seconds)
 

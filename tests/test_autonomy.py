@@ -14,6 +14,7 @@ class StubController:
     def __init__(self) -> None:
         self.autonomy_windows = []
         self._llm_chat_enabled = True
+        self.delay_hints = []
 
     async def generate_autonomous_actions(self, window: float):
         self.autonomy_windows.append(window)
@@ -39,6 +40,11 @@ class StubController:
             "status_ts": 40.0,
             "status_source": "autonomy",
         }
+
+    def consume_autonomy_delay_hint_seconds(self) -> float | None:
+        if self.delay_hints:
+            return self.delay_hints.pop(0)
+        return None
 
     def persona(self) -> str:
         return "Persona"
@@ -67,6 +73,20 @@ def test_compute_autonomy_delay_recent_activity_backoff():
     snapshot = {"seconds_since_activity": 5.0}
     delay = _compute_autonomy_delay(snapshot, autonomy)
     assert delay == 180.0
+
+
+def test_compute_autonomy_delay_uses_suggested_value_with_clamp():
+    autonomy = AutonomyConfig(
+        enabled=True,
+        base_delay_seconds=60.0,
+        min_delay_seconds=10.0,
+        max_delay_seconds=300.0,
+        recent_activity_window_seconds=45.0,
+        recent_activity_multiplier=3.0,
+    )
+    snapshot = {"seconds_since_activity": 5.0}
+    delay = _compute_autonomy_delay(snapshot, autonomy, suggested_delay_seconds=999.0)
+    assert delay == 300.0
 
 
 def test_autonomous_tick_routes_to_pipeline():
@@ -121,6 +141,18 @@ def test_connection_starts_with_llm_chat_disabled():
 
         def set_llm_chat_enabled(self, enabled: bool) -> None:
             self.enabled_values.append(bool(enabled))
+
+        def activity_snapshot(self, _window: float):
+            return {"seconds_since_activity": 0.0}
+
+        def consume_autonomy_delay_hint_seconds(self) -> float | None:
+            return None
+
+        def persona(self) -> str:
+            return "Persona"
+
+        def user_id(self) -> str:
+            return "ai-1"
 
         async def flush_state(self) -> None:
             return None
@@ -269,6 +301,18 @@ def test_handle_client_cleanup_survives_worker_failure():
 
         def set_llm_chat_enabled(self, enabled: bool) -> None:
             self.enabled_values.append(bool(enabled))
+
+        def activity_snapshot(self, _window: float):
+            return {"seconds_since_activity": 0.0}
+
+        def consume_autonomy_delay_hint_seconds(self) -> float | None:
+            return None
+
+        def persona(self) -> str:
+            return "Persona"
+
+        def user_id(self) -> str:
+            return "ai-1"
 
         async def flush_state(self) -> None:
             self.flush_called = True

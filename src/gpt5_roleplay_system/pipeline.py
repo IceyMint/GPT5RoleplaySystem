@@ -116,6 +116,8 @@ class MessagePipeline:
         self._current_mood_ts = now
         self._current_status = "idle"
         self._current_status_ts = now
+        self._autonomy_delay_hint_seconds: float | None = None
+        self._autonomy_decision = "wait"
         self._mood_source = "init"
         self._status_source = "init"
         logger.info(
@@ -283,6 +285,13 @@ class MessagePipeline:
                 self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),
             )
             state_update = await self._llm.generate_state_update(primary_chat, context, overflow_chats, incoming_batch)
+            override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
+                state_update.autonomy_decision,
+                state_update.next_delay_seconds,
+            )
+            if override_decision is not None or override_delay is not None:
+                state_update.autonomy_decision = override_decision
+                state_update.next_delay_seconds = override_delay
             self._tracer.log_event("llm_response_state", self._state_update_payload(state_update))
             if state_update.summary_update and overflow:
                 self._memory.apply_summary(state_update.summary_update, timestamps=overflow_timestamps)
@@ -318,6 +327,13 @@ class MessagePipeline:
             self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),
         )
         bundle = await self._llm.generate_bundle(primary_chat, context, overflow_chats, incoming_batch)
+        override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
+            bundle.autonomy_decision,
+            bundle.next_delay_seconds,
+        )
+        if override_decision is not None or override_delay is not None:
+            bundle.autonomy_decision = override_decision
+            bundle.next_delay_seconds = override_delay
         self._tracer.log_event("llm_response_bundle", self._bundle_response_payload(bundle))
         if bundle.text:
             self._rolling_buffer.add_ai_message(bundle.text, self._persona)
@@ -1125,7 +1141,14 @@ class MessagePipeline:
             "status": self._current_status,
             "status_ts": self._current_status_ts,
             "status_source": self._status_source,
+            "autonomy_decision": self._autonomy_decision,
+            "autonomy_delay_hint_seconds": self._autonomy_delay_hint_seconds,
         }
+
+    def consume_autonomy_delay_hint_seconds(self) -> float | None:
+        hint = self._autonomy_delay_hint_seconds
+        self._autonomy_delay_hint_seconds = None
+        return hint
 
     def _agent_state(self, now_ts: float | None = None) -> Dict[str, Any]:
         current = now_ts or time.time()
@@ -1145,6 +1168,8 @@ class MessagePipeline:
             "last_message_received_at": format_pacific_time(self._last_inbound_ts),
             "last_ai_response_at": format_pacific_time(self._last_response_ts),
             "seconds_since_activity": self.seconds_since_activity(current),
+            "autonomy_decision": self._autonomy_decision,
+            "autonomy_delay_hint_seconds": self._autonomy_delay_hint_seconds,
         }
 
     def _update_mood_and_status(self, bundle: LLMResponseBundle, source: str) -> None:
@@ -1249,6 +1274,12 @@ class MessagePipeline:
         )
         bundle = await self._llm.generate_autonomous_bundle(context, activity)
         bundle.actions = self._filter_autonomous_actions(bundle.actions, participants)
+        decision = self._normalize_autonomy_decision(bundle.autonomy_decision, bool(bundle.actions))
+        delay_hint = self._sanitize_autonomy_delay_hint(bundle.next_delay_seconds)
+        bundle.autonomy_decision = decision
+        bundle.next_delay_seconds = delay_hint
+        self._autonomy_decision = decision
+        self._autonomy_delay_hint_seconds = delay_hint
         self._tracer.log_event("llm_response_autonomy", self._bundle_response_payload(bundle))
         chat_texts = self._chat_texts_from_actions(bundle.actions)
         for text in chat_texts:
@@ -1262,6 +1293,55 @@ class MessagePipeline:
         self._update_mood_and_status(bundle, source="autonomy")
         self._schedule_episode_check()
         return bundle.actions
+
+    @staticmethod
+    def _sanitize_autonomy_delay_hint(value: Any) -> float | None:
+        try:
+            delay = float(value)
+        except (TypeError, ValueError):
+            return None
+        if delay <= 0.0:
+            return None
+        return delay
+
+    @staticmethod
+    def _normalize_autonomy_decision(value: Any, has_actions: bool) -> str:
+        if isinstance(value, str):
+            decision = value.strip().lower()
+            if decision in {"act", "wait", "sleep"}:
+                if has_actions and decision != "act":
+                    return "act"
+                if decision == "act" and not has_actions:
+                    return "wait"
+                return decision
+        return "act" if has_actions else "wait"
+
+    @staticmethod
+    def _normalize_autonomy_decision_value(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        decision = value.strip().lower()
+        if decision in {"act", "wait", "sleep"}:
+            return decision
+        return None
+
+    def _apply_autonomy_scheduler_override_from_incoming(
+        self,
+        decision_value: Any,
+        delay_value: Any,
+    ) -> tuple[str | None, float | None]:
+        decision = self._normalize_autonomy_decision_value(decision_value)
+        delay_hint = self._sanitize_autonomy_delay_hint(delay_value)
+        if decision is None and delay_hint is None:
+            return None, None
+        if decision is not None:
+            self._autonomy_decision = decision
+            # Decision-only overrides should clear stale delay hints.
+            if delay_hint is None:
+                self._autonomy_delay_hint_seconds = None
+        if delay_hint is not None:
+            self._autonomy_delay_hint_seconds = delay_hint
+        return decision, delay_hint
 
     def _participants_for_autonomy(self) -> List[Participant]:
         merged: Dict[str, Participant] = {}
@@ -1485,6 +1565,8 @@ class MessagePipeline:
             "summary": bundle.summary,
             "mood": bundle.mood,
             "status": bundle.status,
+            "autonomy_decision": bundle.autonomy_decision,
+            "next_delay_seconds": bundle.next_delay_seconds,
         }
 
     @staticmethod
@@ -1501,6 +1583,8 @@ class MessagePipeline:
             "summary_update": update.summary_update,
             "mood": update.mood,
             "status": update.status,
+            "autonomy_decision": update.autonomy_decision,
+            "next_delay_seconds": update.next_delay_seconds,
         }
 
     @staticmethod

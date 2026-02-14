@@ -342,7 +342,20 @@ def _build_experience_index(config: ServerConfig, knowledge_store: KnowledgeStor
     return index if index.is_enabled() else None
 
 
-def _compute_autonomy_delay(snapshot: Dict[str, float], autonomy: AutonomyConfig) -> float:
+def _compute_autonomy_delay(
+    snapshot: Dict[str, float],
+    autonomy: AutonomyConfig,
+    suggested_delay_seconds: float | None = None,
+) -> float:
+    if suggested_delay_seconds is not None:
+        try:
+            delay = float(suggested_delay_seconds)
+        except (TypeError, ValueError):
+            delay = 0.0
+        if delay > 0.0:
+            delay = max(delay, autonomy.min_delay_seconds)
+            delay = min(delay, autonomy.max_delay_seconds)
+            return delay
     seconds_since_activity = float(snapshot.get("seconds_since_activity", 0.0) or 0.0)
     delay = float(autonomy.base_delay_seconds)
     if seconds_since_activity < autonomy.recent_activity_window_seconds:
@@ -360,7 +373,8 @@ async def _autonomy_loop(
     window = autonomy.recent_activity_window_seconds
     while True:
         snapshot = session.controller.activity_snapshot(window)
-        delay = _compute_autonomy_delay(snapshot, autonomy)
+        suggested_delay_seconds = session.controller.consume_autonomy_delay_hint_seconds()
+        delay = _compute_autonomy_delay(snapshot, autonomy, suggested_delay_seconds=suggested_delay_seconds)
         await asyncio.sleep(delay)
         if queue.full():
             logger.warning("Dropped autonomous tick for %s: queue full", session.session_id)

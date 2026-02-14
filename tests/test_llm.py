@@ -3,9 +3,11 @@ from gpt5_roleplay_system.llm import (
     PromptCacheStats,
     StructuredAction,
     StructuredBundle,
+    StructuredStateUpdate,
     _clean_json,
     _bundle_from_structured,
     _extract_prompt_cache_usage,
+    _state_update_from_structured,
 )
 from gpt5_roleplay_system.models import ConversationContext, EnvironmentSnapshot
 
@@ -41,6 +43,21 @@ def test_autonomous_text_only_does_not_emit_chat_action():
     assert result.actions == []
 
 
+def test_autonomous_bundle_parses_explicit_wait_and_delay():
+    if StructuredBundle is None:
+        return
+    bundle = StructuredBundle(
+        text="",
+        actions=[],
+        autonomy_decision="wait",
+        next_delay_seconds=900.0,
+    )
+    result = _bundle_from_structured(bundle, mode="autonomous")
+    assert result.autonomy_decision == "wait"
+    assert result.next_delay_seconds == 900.0
+    assert result.actions == []
+
+
 def test_chat_mode_text_only_emits_chat_action():
     if StructuredBundle is None:
         return
@@ -49,6 +66,29 @@ def test_chat_mode_text_only_emits_chat_action():
     assert result.actions
     assert result.actions[0].command_type.value == "CHAT"
     assert result.actions[0].content == "Hello there."
+
+
+def test_chat_mode_preserves_scheduler_override_fields():
+    if StructuredBundle is None:
+        return
+    bundle = StructuredBundle(
+        text="We should rest now.",
+        actions=[],
+        autonomy_decision="sleep",
+        next_delay_seconds=3600.0,
+    )
+    result = _bundle_from_structured(bundle, mode="chat")
+    assert result.autonomy_decision == "sleep"
+    assert result.next_delay_seconds == 3600.0
+
+
+def test_state_update_parses_scheduler_override_fields():
+    if StructuredStateUpdate is None:
+        return
+    update = StructuredStateUpdate(autonomy_decision="wait", next_delay_seconds=1200.0)
+    parsed = _state_update_from_structured(update)
+    assert parsed.autonomy_decision == "wait"
+    assert parsed.next_delay_seconds == 1200.0
 
 
 def test_structured_action_accepts_command_alias():
