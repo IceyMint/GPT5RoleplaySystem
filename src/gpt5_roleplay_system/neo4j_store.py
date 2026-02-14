@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import time
 import unicodedata
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 def _dedupe_preserve_order(items: List[str]) -> List[str]:
@@ -127,12 +130,12 @@ class Neo4jKnowledgeStore(KnowledgeStore):
         return self._driver.session(database=self._database)
 
     def _ensure_database_and_constraints(self) -> None:
-        # Try to create the target database first; ignore if not permitted.
+        # Try to create the target database first.
         try:
             with self._system_session() as system_session:
                 system_session.run(f"CREATE DATABASE {self._database} IF NOT EXISTS")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Neo4j schema setup: unable to ensure database %s (%s)", self._database, exc)
 
         constraint_statements = [
             "CREATE CONSTRAINT person_user_id_unique IF NOT EXISTS "
@@ -152,9 +155,8 @@ class Neo4jKnowledgeStore(KnowledgeStore):
             for statement in constraint_statements + index_statements:
                 try:
                     session.run(statement)
-                except Exception:
-                    # Ignore if unsupported syntax or constraint cannot be created.
-                    continue
+                except Exception as exc:
+                    logger.warning("Neo4j schema setup failed for statement [%s]: %s", statement, exc)
 
     def fetch_people(self, user_ids: List[str]) -> Dict[str, PersonProfile]:
         if not user_ids:

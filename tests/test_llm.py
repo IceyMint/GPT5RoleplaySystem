@@ -3,6 +3,7 @@ from gpt5_roleplay_system.llm import (
     PromptCacheStats,
     StructuredAction,
     StructuredBundle,
+    _clean_json,
     _bundle_from_structured,
     _extract_prompt_cache_usage,
 )
@@ -117,6 +118,11 @@ def test_extract_prompt_cache_usage_parses_usage_fields():
     assert sample.cache_write_tokens == 10
     assert sample.uncached_prompt_tokens == 80
     assert abs(sample.cache_discount - 0.0012) < 1e-9
+
+
+def test_clean_json_repairs_common_malformed_wrappers():
+    raw = "prefix ```json\n{\"a\":1,}\n``` suffix"
+    assert _clean_json(raw) == "{\"a\":1}"
 
 
 def test_prompt_cache_stats_aggregates_counts():

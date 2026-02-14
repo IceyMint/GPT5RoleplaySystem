@@ -1438,34 +1438,34 @@ def _name_in_text(name: str, text: str) -> bool:
     for token in tokens:
         if token in text:
             return True
-        
-        
-        def _clean_json(text: str) -> str:
-            """Attempt to repair common LLM JSON malformations."""
-            if not text:
-                return ""
-        
-            # 1. Remove markdown code blocks if present
-            text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", text, flags=re.DOTALL)
-        
-            # 2. Basic preamble/postamble removal: find first { and last }
-            # Using a slightly more robust approach for nested structures
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                text = text[start : end + 1]
-        
-            # 3. Remove trailing commas in objects and arrays: e.g., {"a": 1,} -> {"a": 1}
-            text = re.sub(r",\s*([\]\}])", r"\1", text)
-        
-            # 4. Remove empty or leading commas in arrays: e.g., [ , {"type":...}] -> [{"type":...}]
-            text = re.sub(r"\[\s*,\s*", "[", text)
-        
-            # 5. Remove multiple consecutive commas
-            text = re.sub(r",\s*,+", ",", text)
-        
-            return text.strip()
     return False
+
+
+def _clean_json(text: str) -> str:
+    """Attempt to repair common LLM JSON malformations."""
+    if not text:
+        return ""
+
+    # 1. Remove markdown code blocks if present
+    text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", text, flags=re.DOTALL)
+
+    # 2. Basic preamble/postamble removal: find first { and last }
+    # Using a slightly more robust approach for nested structures
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
+
+    # 3. Remove trailing commas in objects and arrays: e.g., {"a": 1,} -> {"a": 1}
+    text = re.sub(r",\s*([\]\}])", r"\1", text)
+
+    # 4. Remove empty or leading commas in arrays: e.g., [ , {"type":...}] -> [{"type":...}]
+    text = re.sub(r"\[\s*,\s*", "[", text)
+
+    # 5. Remove multiple consecutive commas
+    text = re.sub(r",\s*,+", ",", text)
+
+    return text.strip()
 
 
 def _collect_other_names(

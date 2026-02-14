@@ -71,10 +71,15 @@ class GPT5RoleplayServer:
         self._server: asyncio.AbstractServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._error_handler: StatusChannelErrorHandler | None = None
+        self._dedup_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._install_error_handler()
+        if self._config.facts_deduplication.enabled:
+            self._dedup_task = asyncio.create_task(
+                _facts_deduplication_loop(self._config, self._knowledge_store, self._llm_client)
+            )
         self._server = await asyncio.start_server(self._handle_client, self._host, self._port)
         addr = ", ".join(str(sock.getsockname()) for sock in self._server.sockets or [])
         logger.info("Server listening on %s", addr)
@@ -82,6 +87,8 @@ class GPT5RoleplayServer:
             async with self._server:
                 await self._server.serve_forever()
         finally:
+            await _cancel_task(self._dedup_task, session_id="server", label="facts_deduplication")
+            self._dedup_task = None
             self._remove_error_handler()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -127,10 +134,6 @@ class GPT5RoleplayServer:
             autonomy_task = asyncio.create_task(_autonomy_loop(session, queue, self._config.autonomy))
             status_task = asyncio.create_task(_status_loop(session, self._config.autonomy))
 
-        dedup_task = None
-        if self._config.facts_deduplication.enabled:
-            dedup_task = asyncio.create_task(_facts_deduplication_loop(self._config, self._knowledge_store, self._llm_client))
-
         try:
             while True:
                 if worker.done():
@@ -157,7 +160,6 @@ class GPT5RoleplayServer:
             await _cancel_task(worker, session_id=session_id, label="worker")
             await _cancel_task(autonomy_task, session_id=session_id, label="autonomy")
             await _cancel_task(status_task, session_id=session_id, label="status")
-            await _cancel_task(dedup_task, session_id=session_id, label="facts_deduplication")
             with contextlib.suppress(Exception):
                 await session.controller.flush_state()
             writer.close()
@@ -259,7 +261,8 @@ def _build_knowledge_store(config: ServerConfig) -> KnowledgeStore:
                 config.neo4j.password,
                 database=config.neo4j.database,
             )
-        except RuntimeError:
+        except RuntimeError as exc:
+            logger.warning("Neo4j unavailable (%s); falling back to in-memory knowledge store", exc)
             return InMemoryKnowledgeStore()
     return InMemoryKnowledgeStore()
 
@@ -297,6 +300,7 @@ def _build_llm_client(config: ServerConfig):
 
 def _build_tracer(config: ServerConfig):
     if not config.wandb.enabled:
+        logger.info("Observability: W&B disabled; using no-op tracer")
         return NoOpTracer()
     if config.wandb.api_key:
         os.environ.setdefault("WANDB_API_KEY", config.wandb.api_key)
@@ -304,7 +308,8 @@ def _build_tracer(config: ServerConfig):
         tracer = WandbTracer(project=config.wandb.project)
         tracer.start_run(config.wandb.run_name or "gpt5-roleplay")
         return tracer
-    except RuntimeError:
+    except RuntimeError as exc:
+        logger.warning("Observability: W&B unavailable (%s); using no-op tracer", exc)
         return NoOpTracer()
 
 
@@ -426,7 +431,7 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
     driver = knowledge_store.driver
     database = knowledge_store.database
     runtime_key = "facts_deduplication"
-    with contextlib.suppress(Exception):
+    try:
         with driver.session(database=database) as session:
             session.run(
                 "MERGE (m:SystemRuntime {name: $name}) "
@@ -435,6 +440,8 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
                 name=runtime_key,
                 initialized_ts=time.time(),
             )
+    except Exception as exc:
+        logger.warning("Failed to initialize dedupe runtime metadata: %s", exc)
 
     while True:
         await asyncio.sleep(interval_seconds)
@@ -559,7 +566,7 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
             logger.info("Periodic facts deduplication complete.")
         except Exception as e:
             run_failed_ts = time.time()
-            with contextlib.suppress(Exception):
+            try:
                 with driver.session(database=database) as session:
                     session.run(
                         "MERGE (m:SystemRuntime {name: $name}) "
@@ -580,6 +587,8 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
                         last_failed_count=int(failed_count),
                         last_error=str(e),
                     )
+            except Exception as meta_exc:
+                logger.warning("Failed to persist dedupe error metadata: %s", meta_exc)
             logger.error("Error in facts deduplication loop: %s", e)
 
 

@@ -139,6 +139,18 @@ def _load_yaml(path: Optional[Path]) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "")
+    if not raw:
+        return bool(default)
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
 def _pick_model(llm_data: Dict[str, Any]) -> str:
     if not llm_data:
         return "deepseek/deepseek-v3.2"
@@ -280,7 +292,7 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
     )
 
     wandb_config = WandbConfig(
-        enabled=bool(wandb_raw.get("enabled", False)),
+        enabled=_env_bool("GPT5_ROLEPLAY_WANDB_ENABLED", bool(wandb_raw.get("enabled", False))),
         project=wandb_raw.get("project", WandbConfig().project),
         run_name=wandb_raw.get("run_name"),
         api_key=os.getenv("WANDB_API_KEY", api_keys.get("wandb_api_key", "")),
