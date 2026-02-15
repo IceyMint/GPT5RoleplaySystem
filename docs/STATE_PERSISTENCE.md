@@ -17,6 +17,10 @@ When `episode_summary.persist_state: true`, the server saves and restores:
 - Conversation memory:
   - recent messages
   - summary text
+- Facts sweep progress:
+  - `cursor_ts` (high-watermark for already-swept message timestamps)
+  - pending facts queue (unswept messages)
+  - pending participants linked to that queue
 - Episode watermark metadata:
   - `last_episode_ts`
   - `last_episode_size`
@@ -54,4 +58,3 @@ State is flushed on disconnect:
   that new key.
 - The pipeline resets activity timestamps to the latest restored message to
   avoid immediate inactivity-triggered episode flushes on reconnect.
-

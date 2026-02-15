@@ -1150,6 +1150,169 @@ def test_periodic_facts_overflow_can_force_flush_when_enabled():
     assert any("one" in call for call in llm.evidence_calls)
 
 
+def test_periodic_facts_restore_preserves_pending_queue():
+    llm_seed = PeriodicFactsLLM(
+        [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
+    )
+    pipeline_seed = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm_seed,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=10),
+        rolling_buffer=RollingBuffer(max_items=10),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=120,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=3,
+            max_pending_age_seconds=120,
+        ),
+    )
+
+    async def run_seed():
+        for idx in range(2):
+            await pipeline_seed.process_chat(
+                {
+                    "text": f"msg-{idx}",
+                    "from_name": "User",
+                    "from_id": "user-1",
+                    "timestamp": 400 + idx,
+                }
+            )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run_seed())
+
+    snapshot = pipeline_seed.snapshot_state()
+    facts_snapshot = snapshot.get("facts", {})
+    assert isinstance(facts_snapshot, dict)
+    assert len(facts_snapshot.get("pending_messages", [])) == 2
+
+    llm_restore = PeriodicFactsLLM(
+        [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
+    )
+    pipeline_restore = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm_restore,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=10),
+        rolling_buffer=RollingBuffer(max_items=10),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=120,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=3,
+            max_pending_age_seconds=120,
+        ),
+    )
+    pipeline_restore.restore_state(snapshot)
+
+    async def run_restore():
+        await pipeline_restore.process_chat(
+            {
+                "text": "msg-2",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 402,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run_restore())
+
+    assert len(llm_restore.evidence_calls) == 1
+    assert llm_restore.evidence_calls[0] == ["msg-0", "msg-1", "msg-2"]
+
+
+def test_periodic_facts_restore_requeues_recent_when_snapshot_has_no_facts_state():
+    llm_seed = PeriodicFactsLLM(
+        [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
+    )
+    pipeline_seed = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm_seed,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=10),
+        rolling_buffer=RollingBuffer(max_items=10),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=120,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=3,
+            max_pending_age_seconds=120,
+        ),
+    )
+
+    async def run_seed():
+        for idx in range(2):
+            await pipeline_seed.process_chat(
+                {
+                    "text": f"msg-{idx}",
+                    "from_name": "User",
+                    "from_id": "user-1",
+                    "timestamp": 500 + idx,
+                }
+            )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run_seed())
+
+    snapshot = pipeline_seed.snapshot_state()
+    snapshot.pop("facts", None)
+
+    llm_restore = PeriodicFactsLLM(
+        [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
+    )
+    pipeline_restore = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm_restore,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=10),
+        rolling_buffer=RollingBuffer(max_items=10),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=120,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=3,
+            max_pending_age_seconds=120,
+        ),
+    )
+    pipeline_restore.restore_state(snapshot)
+    assert llm_restore.evidence_calls == []
+
+    async def run_restore():
+        await pipeline_restore.process_chat(
+            {
+                "text": "msg-2",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 502,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run_restore())
+
+    assert len(llm_restore.evidence_calls) == 1
+    assert llm_restore.evidence_calls[0] == ["msg-0", "msg-1", "msg-2"]
+
+
 def test_pipeline_partial_name_fallback_marks_context():
     llm = ContextCaptureLLM()
     store = InMemoryKnowledgeStore()

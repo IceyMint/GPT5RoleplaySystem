@@ -136,6 +136,7 @@ class MessagePipeline:
         return {
             "rolling_buffer": self._rolling_buffer.snapshot(),
             "memory": self._memory.snapshot(),
+            "facts": self._snapshot_facts_state(),
             "episode": {
                 "last_episode_ts": self._last_episode_ts,
                 "last_episode_size": self._last_episode_size,
@@ -159,6 +160,11 @@ class MessagePipeline:
         memory_state = state.get("memory", {})
         if isinstance(memory_state, dict):
             self._memory.restore(memory_state)
+        facts_state = state.get("facts", {})
+        if isinstance(facts_state, dict):
+            self._restore_facts_state(facts_state)
+        # Backward-compatible recovery for snapshots saved before facts-state persistence.
+        self._recover_pending_facts_from_memory()
         episode_state = state.get("episode", {})
         if isinstance(episode_state, dict):
             self._last_episode_ts = float(episode_state.get("last_episode_ts", 0.0) or 0.0)
@@ -182,6 +188,100 @@ class MessagePipeline:
         if latest_ts > 0:
             self._last_inbound_ts = latest_ts
             self._last_response_ts = latest_ts
+
+    def _snapshot_facts_state(self) -> Dict[str, Any]:
+        pending_messages = [self._serialize_inbound_chat_state(msg) for msg in self._facts_pending_messages]
+        pending_participants = [
+            {"user_id": participant.user_id, "name": participant.name}
+            for participant in self._facts_pending_participants.values()
+            if participant.user_id or participant.name
+        ]
+        return {
+            "cursor_ts": float(self._facts_cursor_ts or 0.0),
+            "last_sweep_ts": float(self._facts_last_sweep_ts or 0.0),
+            "pending_since_ts": float(self._facts_pending_since_ts or 0.0),
+            "pending_messages": pending_messages,
+            "pending_participants": pending_participants,
+        }
+
+    def _restore_facts_state(self, state: Dict[str, Any]) -> None:
+        self._facts_cursor_ts = float(state.get("cursor_ts", self._facts_cursor_ts) or self._facts_cursor_ts)
+        self._facts_last_sweep_ts = float(state.get("last_sweep_ts", self._facts_last_sweep_ts) or self._facts_last_sweep_ts)
+        self._facts_pending_messages = []
+        self._facts_pending_keys = set()
+        pending_raw = state.get("pending_messages", [])
+        if isinstance(pending_raw, list):
+            for item in pending_raw:
+                chat = self._deserialize_inbound_chat_state(item)
+                if chat is None or self._is_self_message(chat):
+                    continue
+                key = self._fact_message_key(chat)
+                if key in self._facts_pending_keys:
+                    continue
+                self._facts_pending_messages.append(chat)
+                self._facts_pending_keys.add(key)
+        self._facts_pending_participants = {}
+        pending_participants_raw = state.get("pending_participants", [])
+        if isinstance(pending_participants_raw, list):
+            for item in pending_participants_raw:
+                if not isinstance(item, dict):
+                    continue
+                participant = Participant(
+                    user_id=str(item.get("user_id", "") or ""),
+                    name=str(item.get("name", "") or ""),
+                )
+                if self._is_self_participant(participant.user_id, participant.name):
+                    continue
+                key = self._participant_key(participant.user_id, participant.name)
+                self._facts_pending_participants[key] = participant
+        if self._facts_pending_messages:
+            derived_participants = self._participants_from_messages(self._facts_pending_messages, [])
+            for participant in derived_participants:
+                if self._is_self_participant(participant.user_id, participant.name):
+                    continue
+                key = self._participant_key(participant.user_id, participant.name)
+                self._facts_pending_participants[key] = participant
+        pending_since = float(state.get("pending_since_ts", 0.0) or 0.0)
+        self._facts_pending_since_ts = pending_since if self._facts_pending_messages else 0.0
+        if self._facts_pending_messages and self._facts_pending_since_ts <= 0.0:
+            self._facts_pending_since_ts = time.time()
+
+    def _recover_pending_facts_from_memory(self) -> None:
+        if not self._facts_enabled or self._facts_mode != "periodic":
+            return
+        recent_items = self._memory.recent()
+        if not recent_items:
+            return
+        recent_chats = self._memory_items_to_chats(recent_items)
+        if not recent_chats:
+            return
+        base_participants = list(self._facts_pending_participants.values())
+        participants = self._participants_from_messages(recent_chats, base_participants)
+        self._enqueue_fact_messages(recent_chats, participants)
+
+    @staticmethod
+    def _serialize_inbound_chat_state(chat: InboundChat) -> Dict[str, Any]:
+        raw_payload = chat.raw if isinstance(chat.raw, dict) else {}
+        return {
+            "text": str(chat.text or ""),
+            "sender_id": str(chat.sender_id or ""),
+            "sender_name": str(chat.sender_name or ""),
+            "timestamp": float(chat.timestamp or 0.0),
+            "raw": dict(raw_payload),
+        }
+
+    @staticmethod
+    def _deserialize_inbound_chat_state(raw: Any) -> InboundChat | None:
+        if not isinstance(raw, dict):
+            return None
+        raw_payload = raw.get("raw", {})
+        return InboundChat(
+            text=str(raw.get("text", "") or ""),
+            sender_id=str(raw.get("sender_id", "") or ""),
+            sender_name=str(raw.get("sender_name", "") or ""),
+            timestamp=float(raw.get("timestamp", 0.0) or 0.0),
+            raw=raw_payload if isinstance(raw_payload, dict) else {},
+        )
 
     def update_environment(self, data: Dict[str, Any]) -> None:
         agents = self._normalize_entities(data.get("agents", []))
@@ -994,10 +1094,10 @@ class MessagePipeline:
 
     def _fact_message_key(self, message: InboundChat) -> str:
         timestamp = float(message.timestamp or 0.0)
-        return (
-            f"{message.sender_id or ''}|{message.sender_name or ''}|{timestamp:.6f}|"
-            f"{(message.text or '').strip()}"
-        )
+        sender_key = str(message.sender_id or "").strip()
+        if not sender_key:
+            sender_key = f"name:{self._name_key(str(message.sender_name or ''))}"
+        return f"{sender_key}|{timestamp:.6f}|{(message.text or '').strip()}"
 
     def _facts_pending_age_seconds(self, now: float | None = None) -> float:
         if self._facts_pending_since_ts <= 0.0:
