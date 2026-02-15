@@ -429,6 +429,39 @@ async def _status_loop(session: ClientSession, autonomy: AutonomyConfig) -> None
         await asyncio.sleep(interval)
 
 
+def _parse_deduped_facts_response(response_text: str) -> list[str]:
+    clean_text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", response_text or "", flags=re.DOTALL)
+    start = clean_text.find("{")
+    end = clean_text.rfind("}")
+    if start != -1 and end != -1:
+        clean_text = clean_text[start : end + 1]
+    clean_text = clean_text.strip()
+    if not clean_text:
+        raise ValueError("empty LLM response content")
+
+    data = json.loads(clean_text)
+    if isinstance(data, dict):
+        refined_raw = data.get("facts", [])
+    elif isinstance(data, list):
+        refined_raw = data
+    else:
+        raise ValueError(f"unexpected JSON payload type: {type(data).__name__}")
+    if not isinstance(refined_raw, list):
+        raise ValueError("facts must be a list")
+
+    seen: set[str] = set()
+    refined_facts: list[str] = []
+    for item in refined_raw:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        refined_facts.append(text)
+    return refined_facts
+
+
 async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: KnowledgeStore, llm_client) -> None:
     from .llm import OpenRouterLLMClient
     if not isinstance(llm_client, OpenRouterLLMClient):
@@ -497,29 +530,30 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
                     f"Person Name: {name}\nCurrent Facts: {json.dumps(facts)}"
                 )
 
+                response_text = ""
                 try:
-                    response_text = await asyncio.to_thread(llm_client._request_text, "You are a precision data cleaner.", prompt)
-
-                    clean_text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", response_text, flags=re.DOTALL)
-                    start = clean_text.find("{")
-                    end = clean_text.rfind("}")
-                    if start != -1 and end != -1:
-                        clean_text = clean_text[start : end + 1]
-
-                    data = json.loads(clean_text)
-                    refined_raw = data.get("facts", [])
-                    if not isinstance(refined_raw, list):
-                        raise ValueError("facts must be a list")
-                    seen: set[str] = set()
-                    refined_facts: list[str] = []
-                    for item in refined_raw:
-                        if not isinstance(item, str):
-                            continue
-                        text = item.strip()
-                        if not text or text in seen:
-                            continue
-                        seen.add(text)
-                        refined_facts.append(text)
+                    response_text = await asyncio.to_thread(
+                        llm_client._request_text,
+                        "You are a precision data cleaner.",
+                        prompt,
+                        temperature=0.0,
+                        include_reasoning=False,
+                    )
+                    try:
+                        refined_facts = _parse_deduped_facts_response(response_text)
+                    except Exception:
+                        retry_prompt = (
+                            f"{prompt}\n\n"
+                            "Return ONLY valid minified JSON with exactly one key named \"facts\"."
+                        )
+                        response_text = await asyncio.to_thread(
+                            llm_client._request_text,
+                            "You are a precision data cleaner.",
+                            retry_prompt,
+                            temperature=0.0,
+                            include_reasoning=False,
+                        )
+                        refined_facts = _parse_deduped_facts_response(response_text)
                     deduped_ts = time.time()
 
                     if refined_facts and refined_facts != facts:
@@ -554,7 +588,16 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
                     processed_count += 1
                 except Exception as e:
                     failed_count += 1
-                    logger.error("Failed to deduplicate facts for %s (%s): %s", name, user_id, e)
+                    preview = (response_text or "").replace("\n", " ").strip()
+                    if len(preview) > 220:
+                        preview = preview[:220] + "..."
+                    logger.error(
+                        "Failed to deduplicate facts for %s (%s): %s | response_preview=%r",
+                        name,
+                        user_id,
+                        e,
+                        preview,
+                    )
                     continue
 
             run_completed_ts = time.time()

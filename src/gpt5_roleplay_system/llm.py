@@ -982,17 +982,26 @@ class OpenRouterLLMClient(LLMClient):
         )
         return _facts_from_structured(parsed) if parsed is not None else []
 
-    def _request_text(self, system_prompt: str, user_prompt: str) -> str:
+    def _request_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        include_reasoning: bool | None = None,
+    ) -> str:
         kwargs = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "max_tokens": self._max_tokens,
-            "temperature": self._temperature,
+            "max_tokens": int(max_tokens if max_tokens is not None else self._max_tokens),
+            "temperature": float(temperature if temperature is not None else self._temperature),
         }
-        if self._reasoning:
+        reasoning_enabled = bool(self._reasoning) if include_reasoning is None else bool(include_reasoning and self._reasoning)
+        if reasoning_enabled:
             kwargs["extra_body"] = {
                 "include_reasoning": True,
                 "reasoning_effort": self._reasoning,

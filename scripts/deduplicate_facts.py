@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import List
+from typing import List, Optional
 
 from neo4j import GraphDatabase
 
@@ -28,14 +28,23 @@ DEDUPLICATION_USER_PROMPT = (
     "Person Name: {name}\nCurrent Facts: {facts}"
 )
 
-async def deduplicate_person_facts(llm_client: OpenRouterLLMClient, name: str, facts: List[str]) -> List[str]:
+async def deduplicate_person_facts(
+    llm_client: OpenRouterLLMClient, name: str, facts: List[str]
+) -> Optional[List[str]]:
     if not facts:
         return []
     
     prompt = DEDUPLICATION_USER_PROMPT.format(name=name, facts=json.dumps(facts))
     
+    response_text = ""
     try:
-        response_text = await asyncio.to_thread(llm_client._request_text, DEDUPLICATION_SYSTEM_PROMPT, prompt)
+        response_text = await asyncio.to_thread(
+            llm_client._request_text,
+            DEDUPLICATION_SYSTEM_PROMPT,
+            prompt,
+            temperature=0.0,
+            include_reasoning=False,
+        )
 
         clean_text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", response_text, flags=re.DOTALL)
         start = clean_text.find("{")
@@ -43,7 +52,27 @@ async def deduplicate_person_facts(llm_client: OpenRouterLLMClient, name: str, f
         if start != -1 and end != -1:
             clean_text = clean_text[start : end + 1]
 
-        data = json.loads(clean_text)
+        try:
+            data = json.loads(clean_text)
+        except Exception:
+            retry_prompt = (
+                f"{prompt}\n\n"
+                "Return ONLY valid minified JSON with exactly one key named \"facts\"."
+            )
+            response_text = await asyncio.to_thread(
+                llm_client._request_text,
+                DEDUPLICATION_SYSTEM_PROMPT,
+                retry_prompt,
+                temperature=0.0,
+                include_reasoning=False,
+            )
+            clean_text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", response_text, flags=re.DOTALL)
+            start = clean_text.find("{")
+            end = clean_text.rfind("}")
+            if start != -1 and end != -1:
+                clean_text = clean_text[start : end + 1]
+            data = json.loads(clean_text)
+
         refined_raw = data.get("facts", [])
         if not isinstance(refined_raw, list):
             raise ValueError("facts must be a list")
@@ -60,8 +89,11 @@ async def deduplicate_person_facts(llm_client: OpenRouterLLMClient, name: str, f
             refined_facts.append(fact)
         return refined_facts
     except Exception as e:
-        logger.error(f"Error deduplicating facts for {name}: {e}")
-        return facts
+        preview = (response_text or "").replace("\n", " ").strip()
+        if len(preview) > 220:
+            preview = preview[:220] + "..."
+        logger.error(f"Error deduplicating facts for {name}: {e} | response_preview={preview!r}")
+        return None
 
 def _config_path_from_args(path: str | None) -> str:
     if path:
@@ -133,6 +165,10 @@ async def main() -> None:
         logger.info(f"Processing {name} ({user_id}) with {len(facts)} facts...")
         refined_facts = await deduplicate_person_facts(llm_client, name, facts)
         deduped_ts = time.time()
+
+        if refined_facts is None:
+            logger.warning(f"Skipping updates for {name} due to dedupe error; needs_dedupe remains true.")
+            continue
 
         if refined_facts and refined_facts != facts:
             logger.info(f"Refined {len(facts)} facts down to {len(refined_facts)} for {name}.")
