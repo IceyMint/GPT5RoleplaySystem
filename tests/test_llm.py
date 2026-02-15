@@ -1,3 +1,5 @@
+import json
+
 from gpt5_roleplay_system.llm import (
     OpenRouterLLMClient,
     PromptCacheStats,
@@ -9,7 +11,7 @@ from gpt5_roleplay_system.llm import (
     _extract_prompt_cache_usage,
     _state_update_from_structured,
 )
-from gpt5_roleplay_system.models import ConversationContext, EnvironmentSnapshot, InboundChat
+from gpt5_roleplay_system.models import ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 
 
 def test_mixed_action_type_emits_both_chat_and_primary():
@@ -132,6 +134,20 @@ def test_system_prompt_includes_persona_instructions():
     prompt = client._system_prompt_for_context(context)
     assert "Persona name: isabella.elara." in prompt
     assert "You are Isabella, a friendly cat." in prompt
+
+
+def test_format_address_check_handles_participant_without_username_field():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    payload = client._format_address_check(
+        chat,
+        "persona",
+        EnvironmentSnapshot(),
+        [Participant(user_id="user-2", name="Evie")],
+        None,
+    )
+    decoded = json.loads(payload)
+    assert decoded["participants"] == ["Evie"]
 
 
 def test_bundle_model_override_only_applies_to_bundle_requests():

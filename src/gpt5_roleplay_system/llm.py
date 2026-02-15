@@ -643,9 +643,6 @@ class OpenRouterLLMClient(LLMClient):
         update = _state_update_from_structured(parsed)
         if not self._facts_in_bundle:
             update.facts = []
-            facts_only = await asyncio.to_thread(self._request_facts_from_chat, chat, context)
-            if facts_only is not None:
-                update.facts = _facts_from_structured(facts_only)
         return update
 
     async def generate_autonomous_bundle(
@@ -1135,8 +1132,9 @@ class OpenRouterLLMClient(LLMClient):
         if participants:
             participant_details = self._stable_participants_payload(participants)
             for detail in participant_details:
-                if detail["username"]:
-                    participant_names.append(detail["username"])
+                username = str(detail.get("username") or detail.get("name") or "").strip()
+                if username:
+                    participant_names.append(username)
 
         recent_messages: List[Dict[str, Any]] = []
         summary = ""
@@ -1206,7 +1204,6 @@ class OpenRouterLLMClient(LLMClient):
             "incoming_batch": self._canonicalize_for_prompt(incoming_batch or []),
             "incoming": self._chat_payload(chat),
             "now_timestamp": format_pacific_time(now),
-            "current_time_iso": format_pacific_time(now),
         }
         return self._serialize_payload(payload)
 
@@ -1221,20 +1218,16 @@ class OpenRouterLLMClient(LLMClient):
         related_experiences: List[Dict[str, Any]],
         people_facts: Dict[str, Any],
     ) -> str:
+        trimmed_evidence = list(evidence_messages[-24:])
+        incoming = trimmed_evidence[-1]
         evidence_payload: List[Dict[str, Any]] = []
-        for message in evidence_messages[-24:]:
+        for message in trimmed_evidence[:-1]:
             evidence_payload.append(self._chat_payload(message))
-        incoming = evidence_messages[-1]
         payload = {
             "persona": persona,
             "user_id": user_id,
             "participants": self._stable_participants_payload(participants),
             "people_facts": self._canonicalize_for_prompt(people_facts),
-            # Included for transparency, but the system prompt explicitly forbids using them for facts.
-            "summary": summary,
-            "summary_meta": self._canonicalize_for_prompt(summary_meta),
-            "related_experiences": self._canonicalize_for_prompt(related_experiences),
-            "persona_instructions": "",
             "evidence_messages": evidence_payload,
             "incoming": self._chat_payload(incoming),
             "now_timestamp": format_pacific_time(),
@@ -1277,7 +1270,6 @@ class OpenRouterLLMClient(LLMClient):
                 "status": activity.get("status"),
             },
             "now_timestamp": format_pacific_time(now),
-            "current_time_iso": format_pacific_time(now),
         }
         return self._serialize_payload(payload)
 
@@ -1294,15 +1286,19 @@ class OpenRouterLLMClient(LLMClient):
         sender_username = str(raw.get("_sender_username") or "") or username or chat.sender_name or sender_id
         sender_display = str(raw.get("_sender_display_name") or "") or display_name or chat.sender_name or sender_username
         sender_value = sender_username or sender_display or sender_id
-        return {
+        payload = {
             "sender": sender_value,
             "sender_id": sender_id,
-            "sender_username": sender_username,
-            "sender_display_name": sender_display,
-            "sender_full_name": full_name,
             "text": chat.text,
             "timestamp": format_pacific_time(float(chat.timestamp or 0.0)),
         }
+        if sender_username and sender_username != sender_value:
+            payload["sender_username"] = sender_username
+        if sender_display and sender_display not in {sender_value, sender_username}:
+            payload["sender_display_name"] = sender_display
+        if full_name and full_name not in {sender_value, sender_username, sender_display}:
+            payload["sender_full_name"] = full_name
+        return payload
 
     @staticmethod
     def _participant_payload(participant: Participant) -> Dict[str, Any]:
@@ -1310,13 +1306,17 @@ class OpenRouterLLMClient(LLMClient):
         display_name, username = split_display_and_username(full_name)
         username_value = username or participant.name or participant.user_id
         display_value = display_name or participant.name or username_value
-        return {
+        payload = {
             "user_id": participant.user_id,
             "name": username_value,
-            "username": username_value,
-            "display_name": display_value,
-            "full_name": full_name,
         }
+        if username_value and username_value != payload["name"]:
+            payload["username"] = username_value
+        if display_value and display_value != payload["name"]:
+            payload["display_name"] = display_value
+        if full_name and full_name not in {payload["name"], display_value}:
+            payload["full_name"] = full_name
+        return payload
 
 
 def _bundle_from_structured(parsed: StructuredBundle, mode: str = "chat") -> LLMResponseBundle:
