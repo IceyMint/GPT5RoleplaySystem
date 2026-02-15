@@ -512,6 +512,7 @@ class OpenRouterLLMClient(LLMClient):
         api_key: str,
         base_url: str,
         model: str,
+        bundle_model: str = "",
         address_model: str | None = None,
         max_tokens: int = 500,
         temperature: float = 0.6,
@@ -527,6 +528,7 @@ class OpenRouterLLMClient(LLMClient):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._bundle_model = bundle_model or model
         self._address_model = address_model or model
         self._max_tokens = max_tokens
         self._temperature = temperature
@@ -844,7 +846,7 @@ class OpenRouterLLMClient(LLMClient):
         incoming_batch: List[Dict[str, Any]] | None,
     ) -> Optional[StructuredBundle]:
         kwargs = {
-            "model": self._model,
+            "model": self._bundle_model,
             "messages": [
                 {"role": "system", "content": self._system_prompt_for_context(context)},
                 {"role": "user", "content": self._format_context(chat, context, overflow, incoming_batch)},

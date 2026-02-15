@@ -271,8 +271,9 @@ def _build_llm_client(config: ServerConfig):
     if config.llm.api_key:
         try:
             logger.info(
-                "LLM: OpenRouter enabled (model=%s, address_model=%s, base_url=%s)",
+                "LLM: OpenRouter enabled (model=%s, bundle_model=%s, address_model=%s, base_url=%s)",
                 config.llm.model,
+                config.llm.bundle_model or config.llm.model,
                 config.llm.address_model or config.llm.model,
                 config.llm.base_url,
             )
@@ -280,6 +281,7 @@ def _build_llm_client(config: ServerConfig):
                 api_key=config.llm.api_key,
                 base_url=config.llm.base_url,
                 model=config.llm.model,
+                bundle_model=config.llm.bundle_model,
                 address_model=config.llm.address_model,
                 max_tokens=config.llm.max_tokens,
                 temperature=config.llm.temperature,

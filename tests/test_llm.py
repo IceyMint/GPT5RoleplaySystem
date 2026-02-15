@@ -9,7 +9,7 @@ from gpt5_roleplay_system.llm import (
     _extract_prompt_cache_usage,
     _state_update_from_structured,
 )
-from gpt5_roleplay_system.models import ConversationContext, EnvironmentSnapshot
+from gpt5_roleplay_system.models import ConversationContext, EnvironmentSnapshot, InboundChat
 
 
 def test_mixed_action_type_emits_both_chat_and_primary():
@@ -132,6 +132,61 @@ def test_system_prompt_includes_persona_instructions():
     prompt = client._system_prompt_for_context(context)
     assert "Persona name: isabella.elara." in prompt
     assert "You are Isabella, a friendly cat." in prompt
+
+
+def test_bundle_model_override_only_applies_to_bundle_requests():
+    if StructuredBundle is None or StructuredStateUpdate is None:
+        return
+
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._model = "default-model"
+            self._bundle_model = "bundle-only-model"
+            self._max_tokens = 123
+            self._temperature = 0.1
+            self._reasoning = ""
+            self.calls = []
+
+        def _system_prompt_for_context(self, context):
+            return "sys"
+
+        def _state_system_prompt_for_context(self, context):
+            return "state-sys"
+
+        def _autonomous_system_prompt_for_context(self, context):
+            return "autonomy-sys"
+
+        def _format_context(self, chat, context, overflow, incoming_batch):
+            return "ctx"
+
+        def _format_autonomous_context(self, context, activity):
+            return "autonomy-ctx"
+
+        def _request_structured(self, model_class, kwargs):
+            self.calls.append(kwargs["model"])
+            return None
+
+    env = EnvironmentSnapshot()
+    context = ConversationContext(
+        persona="persona",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[],
+        people_facts={},
+        recent_messages=[],
+        summary="",
+        related_experiences=[],
+        summary_meta={},
+        agent_state={},
+    )
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client = CaptureClient()
+
+    client._request_bundle(chat, context, None, None)
+    client._request_state_update(chat, context, None, None)
+    client._request_autonomous_bundle(context, {})
+
+    assert client.calls == ["bundle-only-model", "default-model", "default-model"]
 
 
 class _Usage:

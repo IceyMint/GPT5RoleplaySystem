@@ -39,6 +39,7 @@ Primary LLM settings:
 - `base_url`: default `https://openrouter.ai/api/v1`
 - `thinking_model`: preferred; used when present
 - `models`: compatibility fallback map; first useful entry is selected
+- `bundle_model`: optional override used only for `generate_bundle` (main chat reply path)
 - `address_model`: cheap/fast model for addressed-to-me classification
 - `embedding_model`: embedding model id (for similarity search)
 - `embedding_dimensions`: vector dimension (must match DB index)
@@ -50,6 +51,7 @@ Environment overrides:
 
 - `GPT5_ROLEPLAY_LLM_BASE_URL`
 - `GPT5_ROLEPLAY_LLM_MODEL`
+- `GPT5_ROLEPLAY_LLM_BUNDLE_MODEL`
 - `GPT5_ROLEPLAY_LLM_ADDRESS_MODEL`
 - `GPT5_ROLEPLAY_LLM_EMBEDDING_MODEL`
 - `GPT5_ROLEPLAY_LLM_EMBEDDING_DIMENSIONS`
@@ -120,4 +122,3 @@ W&B logging:
 - `run_name`: optional run name
 
 When enabled and installed, Weave is also initialized automatically.
-

@@ -14,6 +14,7 @@ class LLMConfig:
     embedding_base_url: str = ""
     api_key: str = ""
     model: str = "deepseek/deepseek-v3.2"
+    bundle_model: str = ""
     address_model: str = ""
     embedding_model: str = ""
     embedding_api_key: str = ""
@@ -185,6 +186,7 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         base_url=os.getenv("GPT5_ROLEPLAY_LLM_BASE_URL", llm_raw.get("base_url", LLMConfig().base_url)),
         api_key=os.getenv("OPENROUTER_API_KEY", api_keys.get("openrouter_api_key", "")),
         model=os.getenv("GPT5_ROLEPLAY_LLM_MODEL", _pick_model(llm_raw)),
+        bundle_model=os.getenv("GPT5_ROLEPLAY_LLM_BUNDLE_MODEL", llm_raw.get("bundle_model", "")),
         address_model=os.getenv("GPT5_ROLEPLAY_LLM_ADDRESS_MODEL", llm_raw.get("address_model", "")),
         embedding_base_url=os.getenv("GPT5_ROLEPLAY_LLM_EMBEDDING_BASE_URL", llm_raw.get("embedding_base_url", "")),
         embedding_model=os.getenv("GPT5_ROLEPLAY_LLM_EMBEDDING_MODEL", llm_raw.get("embedding_model", "")),
