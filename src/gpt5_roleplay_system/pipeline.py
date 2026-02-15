@@ -93,9 +93,14 @@ class MessagePipeline:
         self._facts_mode = mode if mode in {"periodic", "per_message"} else "periodic"
         self._facts_interval_seconds = max(1.0, float(facts.interval_seconds))
         self._facts_evidence_max_messages = max(4, int(facts.evidence_max_messages))
-        self._facts_last_sweep_ts = 0.0
+        self._facts_min_pending_messages = max(1, int(facts.min_pending_messages))
+        self._facts_max_pending_age_seconds = max(1.0, float(facts.max_pending_age_seconds))
+        self._facts_flush_on_overflow = bool(facts.flush_on_overflow)
+        self._facts_last_sweep_ts = time.time()
         self._facts_cursor_ts = 0.0
         self._facts_pending_messages: List[InboundChat] = []
+        self._facts_pending_keys: Set[str] = set()
+        self._facts_pending_since_ts = 0.0
         self._facts_pending_participants: Dict[str, Participant] = {}
         self._facts_task: asyncio.Task | None = None
         self._last_seen_cache: Dict[str, float] = {}
@@ -950,25 +955,31 @@ class MessagePipeline:
         if self._facts_mode != "periodic":
             return
         facts_participants = self._participants_from_messages(recent_chats + overflow_chats, participants)
-        if overflow_chats:
-            self._enqueue_fact_messages(overflow_chats, facts_participants)
-        now = time.time()
-        if (now - self._facts_last_sweep_ts) < self._facts_interval_seconds:
-            return
-        recent_items = self._memory.recent()
-        new_items = [item for item in recent_items if float(item.timestamp or 0.0) > self._facts_cursor_ts]
-        new_chats = self._memory_items_to_chats(new_items)
-        if new_chats:
-            self._enqueue_fact_messages(new_chats, facts_participants)
-        self._facts_last_sweep_ts = now
+        # Queue only newly arrived chat messages. Overflow messages are usually already in
+        # this queue from earlier turns; they should not force immediate extraction unless
+        # explicitly configured.
+        self._enqueue_fact_messages(recent_chats, facts_participants)
+        self._maybe_start_facts_worker(overflow_present=bool(overflow_chats))
 
     def _enqueue_fact_messages(self, messages: List[InboundChat], participants: List[Participant]) -> None:
         if not self._facts_enabled:
             return
+        now = time.time()
+        appended = False
         for message in messages:
             if self._is_self_message(message):
                 continue
+            timestamp = float(message.timestamp or 0.0)
+            if timestamp > 0.0 and timestamp <= self._facts_cursor_ts:
+                continue
+            key = self._fact_message_key(message)
+            if key in self._facts_pending_keys:
+                continue
             self._facts_pending_messages.append(message)
+            self._facts_pending_keys.add(key)
+            appended = True
+        if appended and self._facts_pending_since_ts <= 0.0:
+            self._facts_pending_since_ts = now
         for participant in participants:
             if self._is_self_participant(participant.user_id, participant.name):
                 continue
@@ -977,17 +988,82 @@ class MessagePipeline:
         max_pending = max(self._facts_evidence_max_messages * 3, self._facts_evidence_max_messages)
         if len(self._facts_pending_messages) > max_pending:
             self._facts_pending_messages = self._facts_pending_messages[-max_pending:]
-        if self._facts_task is None or self._facts_task.done():
-            self._facts_task = asyncio.create_task(self._facts_worker())
+            self._facts_pending_keys = {self._fact_message_key(item) for item in self._facts_pending_messages}
+            # Queue was trimmed to recent items; reset age to avoid immediate re-flush loops.
+            self._facts_pending_since_ts = now if self._facts_pending_messages else 0.0
 
-    async def _facts_worker(self) -> None:
-        while self._facts_pending_messages:
-            pending_messages = self._facts_pending_messages[-self._facts_evidence_max_messages :]
-            self._facts_pending_messages = []
-            pending_participants = list(self._facts_pending_participants.values())
-            participants = self._participants_from_messages(pending_messages, pending_participants)
+    def _fact_message_key(self, message: InboundChat) -> str:
+        timestamp = float(message.timestamp or 0.0)
+        return (
+            f"{message.sender_id or ''}|{message.sender_name or ''}|{timestamp:.6f}|"
+            f"{(message.text or '').strip()}"
+        )
+
+    def _facts_pending_age_seconds(self, now: float | None = None) -> float:
+        if self._facts_pending_since_ts <= 0.0:
+            return 0.0
+        timestamp = time.time() if now is None else float(now)
+        return max(0.0, timestamp - self._facts_pending_since_ts)
+
+    def _fact_flush_reason(self, now: float, overflow_present: bool) -> str:
+        pending_count = len(self._facts_pending_messages)
+        if pending_count <= 0:
+            return ""
+        if overflow_present and self._facts_flush_on_overflow:
+            return "overflow"
+        if pending_count >= self._facts_min_pending_messages:
+            return "min_pending"
+        if self._facts_pending_age_seconds(now) >= self._facts_max_pending_age_seconds:
+            return "max_age"
+        if (now - self._facts_last_sweep_ts) >= self._facts_interval_seconds:
+            return "interval"
+        return ""
+
+    def _maybe_start_facts_worker(self, overflow_present: bool = False) -> None:
+        if not self._facts_enabled or self._facts_mode != "periodic":
+            return
+        if self._facts_task is not None and not self._facts_task.done():
+            return
+        now = time.time()
+        flush_reason = self._fact_flush_reason(now, overflow_present)
+        if not flush_reason:
+            return
+        pending_messages = list(self._facts_pending_messages)
+        if not pending_messages:
+            return
+        pending_participants = list(self._facts_pending_participants.values())
+        pending_before = len(pending_messages)
+        pending_age_seconds = self._facts_pending_age_seconds(now)
+        self._facts_pending_messages = []
+        self._facts_pending_keys = set()
+        self._facts_pending_since_ts = 0.0
+        self._facts_last_sweep_ts = now
+        self._facts_task = asyncio.create_task(
+            self._facts_worker(
+                pending_messages=pending_messages,
+                pending_participants=pending_participants,
+                flush_reason=flush_reason,
+                pending_before=pending_before,
+                pending_age_seconds=pending_age_seconds,
+            )
+        )
+
+    async def _facts_worker(
+        self,
+        pending_messages: List[InboundChat],
+        pending_participants: List[Participant],
+        flush_reason: str,
+        pending_before: int,
+        pending_age_seconds: float,
+    ) -> None:
+        remaining = list(pending_messages)
+        chunk_index = 0
+        while remaining:
+            chunk = remaining[: self._facts_evidence_max_messages]
+            remaining = remaining[self._facts_evidence_max_messages :]
+            participants = self._participants_from_messages(chunk, pending_participants)
             cursor_before = self._facts_cursor_ts
-            sweep = await asyncio.to_thread(self._extract_and_store_facts, pending_messages, participants)
+            sweep = await asyncio.to_thread(self._extract_and_store_facts, chunk, participants)
             max_ts = float(sweep.get("max_ts", 0.0) or 0.0)
             if max_ts > self._facts_cursor_ts:
                 self._facts_cursor_ts = max_ts
@@ -995,7 +1071,11 @@ class MessagePipeline:
                 "facts_sweep",
                 {
                     "mode": self._facts_mode,
-                    "messages": int(sweep.get("messages", len(pending_messages))),
+                    "flush_reason": flush_reason if chunk_index == 0 else "drain",
+                    "pending_before": pending_before if chunk_index == 0 else len(remaining) + len(chunk),
+                    "pending_after": len(remaining),
+                    "pending_age_seconds": pending_age_seconds if chunk_index == 0 else 0.0,
+                    "messages": int(sweep.get("messages", len(chunk))),
                     "participants": int(sweep.get("participants", len(participants))),
                     "facts_extracted": int(sweep.get("facts_extracted", 0)),
                     "fact_strings_extracted": int(sweep.get("fact_strings_extracted", 0)),
@@ -1006,9 +1086,10 @@ class MessagePipeline:
                     "max_ts": max_ts,
                 },
             )
+            chunk_index += 1
         self._facts_task = None
         if self._facts_pending_messages:
-            self._facts_task = asyncio.create_task(self._facts_worker())
+            self._maybe_start_facts_worker()
 
     def _extract_and_store_facts(self, messages: List[InboundChat], participants: List[Participant]) -> Dict[str, Any]:
         if not messages or not participants:

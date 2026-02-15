@@ -68,6 +68,19 @@ Experience retrieval knobs:
 - `experience_score_min`: minimum similarity score gate
 - `experience_score_delta`: max allowed drop from the top score
 
+## `facts`
+
+Durable-fact extraction behavior:
+
+- `enabled`: turn fact extraction on/off
+- `mode`: `periodic` (recommended) or `per_message`
+- `interval_seconds`: minimum time between periodic sweeps
+- `evidence_max_messages`: max messages sent to the facts extractor per sweep chunk
+- `in_bundle`: include facts extraction in primary chat bundle path
+- `min_pending_messages`: flush queued messages once this many are waiting
+- `max_pending_age_seconds`: flush queued messages when oldest queued age reaches this threshold
+- `flush_on_overflow`: when `true`, memory overflow can force immediate fact flush
+
 ## `episode_summary`
 
 This drives episodic experience creation and session persistence.

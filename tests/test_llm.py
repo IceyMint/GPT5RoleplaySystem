@@ -16,7 +16,7 @@ def test_mixed_action_type_emits_both_chat_and_primary():
     if StructuredAction is None or StructuredBundle is None:
         return
     action = StructuredAction(
-        type="LOOK_AT",
+        type="TOUCH",
         content="Hello, Evie.",
         target_uuid="4405928b-269c-d1a4-464c-1d0e6d16f346",
         x=1.0,
@@ -28,7 +28,7 @@ def test_mixed_action_type_emits_both_chat_and_primary():
     result = _bundle_from_structured(bundle)
     types = [item.command_type.value for item in result.actions]
     assert types[0] == "CHAT"
-    assert "LOOK_AT" in types
+    assert "TOUCH" in types
     chat = result.actions[0]
     assert chat.content == "Hello, Evie."
     assert chat.parameters.get("recipient") == "Evie"

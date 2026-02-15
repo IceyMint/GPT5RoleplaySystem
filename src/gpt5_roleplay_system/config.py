@@ -54,6 +54,9 @@ class FactsConfig:
     interval_seconds: float = 30.0
     evidence_max_messages: int = 24
     in_bundle: bool = False
+    min_pending_messages: int = 6
+    max_pending_age_seconds: float = 120.0
+    flush_on_overflow: bool = False
 
 
 @dataclass
@@ -241,6 +244,11 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         interval_seconds=float(facts_raw.get("interval_seconds", FactsConfig().interval_seconds)),
         evidence_max_messages=int(facts_raw.get("evidence_max_messages", FactsConfig().evidence_max_messages)),
         in_bundle=bool(facts_raw.get("in_bundle", FactsConfig().in_bundle)),
+        min_pending_messages=int(facts_raw.get("min_pending_messages", FactsConfig().min_pending_messages)),
+        max_pending_age_seconds=float(
+            facts_raw.get("max_pending_age_seconds", FactsConfig().max_pending_age_seconds)
+        ),
+        flush_on_overflow=bool(facts_raw.get("flush_on_overflow", FactsConfig().flush_on_overflow)),
     )
 
     episode_config = EpisodeConfig(

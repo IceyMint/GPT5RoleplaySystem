@@ -207,7 +207,13 @@ def test_prompt_bundle_includes_timestamps():
         rolling_buffer=RollingBuffer(max_items=5),
         experience_store=ExperienceStore(),
         tracer=tracer,
-        facts_config=FactsConfig(mode="periodic", interval_seconds=1, evidence_max_messages=12, in_bundle=False),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=1,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=1,
+        ),
     )
 
     asyncio.run(
@@ -226,11 +232,11 @@ def test_prompt_bundle_includes_timestamps():
     payload = prompt_payloads[-1]
     assert "now_timestamp" in payload
     assert "recent_time_range" in payload
-    assert payload["incoming"]["timestamp"] == 123.0
+    assert isinstance(payload["incoming"]["timestamp"], str)
+    assert payload["incoming"]["timestamp"]
     assert payload["incoming_sender_known"] is False
     assert payload["incoming_sender_id"] == "user-1"
-    assert payload["recent_messages"]
-    assert payload["recent_messages"][-1]["timestamp"] == 123.0
+    assert payload["recent_messages"] == []
     assert payload["incoming_batch"]
     assert payload["incoming_batch"][-1]["timestamps"] == [123.0]
     assert "agent_state" in payload
@@ -440,7 +446,13 @@ def test_people_facts_include_last_seen():
         rolling_buffer=RollingBuffer(max_items=5),
         experience_store=ExperienceStore(),
         tracer=tracer,
-        facts_config=FactsConfig(mode="periodic", interval_seconds=1, evidence_max_messages=12, in_bundle=False),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=1,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=1,
+        ),
     )
 
     pipeline.update_environment(
@@ -871,7 +883,13 @@ def test_periodic_fact_sweep_stores_facts_async():
         rolling_buffer=RollingBuffer(max_items=5),
         experience_store=ExperienceStore(),
         tracer=NoOpTracer(),
-        facts_config=FactsConfig(mode="periodic", interval_seconds=1, evidence_max_messages=12, in_bundle=False),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=1,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=1,
+        ),
     )
 
     async def run_once():
@@ -908,7 +926,13 @@ def test_periodic_fact_sweep_includes_overflow_messages():
         rolling_buffer=RollingBuffer(max_items=5),
         experience_store=ExperienceStore(),
         tracer=NoOpTracer(),
-        facts_config=FactsConfig(mode="periodic", interval_seconds=1, evidence_max_messages=12, in_bundle=False),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=1,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=1,
+        ),
     )
 
     batch = [
@@ -961,7 +985,13 @@ def test_periodic_fact_sweep_logs_tracer_event():
         rolling_buffer=RollingBuffer(max_items=5),
         experience_store=ExperienceStore(),
         tracer=tracer,
-        facts_config=FactsConfig(mode="periodic", interval_seconds=1, evidence_max_messages=12, in_bundle=False),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=1,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=1,
+        ),
     )
 
     async def run_once():
@@ -981,6 +1011,143 @@ def test_periodic_fact_sweep_logs_tracer_event():
     facts_events = [payload for name, payload in tracer.events if name == "facts_sweep"]
     assert facts_events
     assert any(event.get("fact_strings_stored", 0) >= 1 for event in facts_events)
+
+
+def test_periodic_facts_batch_until_min_pending():
+    llm = PeriodicFactsLLM(
+        [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
+    )
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=10),
+        rolling_buffer=RollingBuffer(max_items=10),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=120,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=3,
+            max_pending_age_seconds=120,
+        ),
+    )
+
+    async def run_batch():
+        for idx in range(3):
+            await pipeline.process_chat(
+                {
+                    "text": f"msg-{idx}",
+                    "from_name": "User",
+                    "from_id": "user-1",
+                    "timestamp": 100 + idx,
+                    "participants": [{"user_id": "user-2", "name": "Evie"}],
+                }
+            )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run_batch())
+
+    assert len(llm.evidence_calls) == 1
+    assert llm.evidence_calls[0] == ["msg-0", "msg-1", "msg-2"]
+
+
+def test_periodic_facts_overflow_does_not_force_flush_by_default():
+    llm = PeriodicFactsLLM(
+        [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
+    )
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=2, defer_compression=True),
+        rolling_buffer=RollingBuffer(max_items=10),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=120,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=10,
+            max_pending_age_seconds=120,
+            flush_on_overflow=False,
+        ),
+    )
+
+    async def run_once():
+        await pipeline.process_chat_batch(
+            [
+                {"text": "one", "from_name": "User", "from_id": "user-1", "timestamp": 200},
+                {"text": "two", "from_name": "User", "from_id": "user-1", "timestamp": 201},
+                {"text": "three", "from_name": "User", "from_id": "user-1", "timestamp": 202},
+            ]
+        )
+        await pipeline.process_chat(
+            {
+                "text": "four",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 203,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run_once())
+
+    assert llm.evidence_calls == []
+
+
+def test_periodic_facts_overflow_can_force_flush_when_enabled():
+    llm = PeriodicFactsLLM(
+        [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
+    )
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=2, defer_compression=True),
+        rolling_buffer=RollingBuffer(max_items=10),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        facts_config=FactsConfig(
+            mode="periodic",
+            interval_seconds=120,
+            evidence_max_messages=12,
+            in_bundle=False,
+            min_pending_messages=10,
+            max_pending_age_seconds=120,
+            flush_on_overflow=True,
+        ),
+    )
+
+    async def run_once():
+        await pipeline.process_chat_batch(
+            [
+                {"text": "one", "from_name": "User", "from_id": "user-1", "timestamp": 300},
+                {"text": "two", "from_name": "User", "from_id": "user-1", "timestamp": 301},
+                {"text": "three", "from_name": "User", "from_id": "user-1", "timestamp": 302},
+            ]
+        )
+        await pipeline.process_chat(
+            {
+                "text": "four",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 303,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run_once())
+
+    assert llm.evidence_calls
+    assert any("one" in call for call in llm.evidence_calls)
 
 
 def test_pipeline_partial_name_fallback_marks_context():
