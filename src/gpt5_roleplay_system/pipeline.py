@@ -1655,7 +1655,7 @@ class MessagePipeline:
             timestamps.append(float(getattr(item, "timestamp", 0.0) or 0.0))
         return max(timestamps) if timestamps else 0.0
 
-    def _environment_payload(self, object_limit: int = 20) -> Dict[str, Any]:
+    def _environment_payload(self, object_limit: int = 25) -> Dict[str, Any]:
         return {
             "location": self._environment.location,
             "avatar_position": self._environment.avatar_position,
