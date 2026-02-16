@@ -17,12 +17,15 @@ Resolution order:
 - `queue_drop_policy`: `drop_oldest` (default) or `drop_newest`
 - `chat_batch_window_ms`: batching window for rapid chat bursts
 - `chat_batch_max`: max number of chat messages batched into one LLM call
+- `max_environment_participants`: cap for nearby agents included in prompt context
+- `persona_profiles`: optional map of persona name -> profile text (case-insensitive keying)
 
 ## `api_keys`
 
 Supported keys:
 
 - `openrouter_api_key`: used as the primary LLM key
+- `embedding_api_key`: optional embedding key (falls back to `openai_api_key`, then `OPENAI_API_KEY`)
 - `openai_api_key`: used for embeddings / Neo4j GenAI token
 - `wandb_api_key`: used for W&B logging
 
@@ -37,15 +40,17 @@ Environment variables override these:
 Primary LLM settings:
 
 - `base_url`: default `https://openrouter.ai/api/v1`
+- `embedding_base_url`: optional base URL override for embeddings client
 - `thinking_model`: preferred; used when present
 - `models`: compatibility fallback map; first useful entry is selected
 - `bundle_model`: optional override used only for `generate_bundle` (main chat reply path)
 - `address_model`: cheap/fast model for addressed-to-me classification
 - `embedding_model`: embedding model id (for similarity search)
 - `embedding_dimensions`: vector dimension (must match DB index)
-- `max_tokens`: completion cap (kept at 500 by design)
+- `max_tokens`: completion cap for model responses
 - `temperature`: generation temperature
 - `timeout`: request timeout seconds
+- `reasoning`: optional OpenRouter reasoning effort level (for supported models)
 
 Environment overrides:
 
@@ -53,11 +58,13 @@ Environment overrides:
 - `GPT5_ROLEPLAY_LLM_MODEL`
 - `GPT5_ROLEPLAY_LLM_BUNDLE_MODEL`
 - `GPT5_ROLEPLAY_LLM_ADDRESS_MODEL`
+- `GPT5_ROLEPLAY_LLM_EMBEDDING_BASE_URL`
 - `GPT5_ROLEPLAY_LLM_EMBEDDING_MODEL`
 - `GPT5_ROLEPLAY_LLM_EMBEDDING_DIMENSIONS`
 - `GPT5_ROLEPLAY_LLM_MAX_TOKENS`
 - `GPT5_ROLEPLAY_LLM_TEMPERATURE`
 - `GPT5_ROLEPLAY_LLM_TIMEOUT`
+- `GPT5_ROLEPLAY_LLM_REASONING`
 
 ## `knowledge_storage`
 
@@ -110,6 +117,17 @@ Autonomy + status loop:
 - `status_interval_seconds`: cadence for status emissions
 - `status_channel`: when set, also emits a `CHAT` command to that channel
 
+## `facts_deduplication`
+
+Periodic post-processing loop that collapses redundant facts in Neo4j.
+
+- `enabled`: enables/disables the background deduplication loop
+- `interval_hours`: time between deduplication passes
+
+Notes:
+
+- This loop runs only when both Neo4j storage and `OpenRouterLLMClient` are active.
+
 ## `database`
 
 Neo4j connection:
@@ -135,3 +153,16 @@ W&B logging:
 - `run_name`: optional run name
 
 When enabled and installed, Weave is also initialized automatically.
+
+Environment override:
+
+- `GPT5_ROLEPLAY_WANDB_ENABLED`
+
+## Additional Environment Overrides
+
+- `GPT5_ROLEPLAY_HOST`, `GPT5_ROLEPLAY_PORT`
+- `GPT5_ROLEPLAY_PERSONA`, `GPT5_ROLEPLAY_USER_ID`
+- `GPT5_ROLEPLAY_QUEUE_MAX`, `GPT5_ROLEPLAY_QUEUE_DROP`
+- `GPT5_ROLEPLAY_BATCH_WINDOW_MS`, `GPT5_ROLEPLAY_BATCH_MAX`
+- `GPT5_ROLEPLAY_MAX_PARTICIPANTS`
+- `GPT5_ROLEPLAY_SUMMARY` (`simple` or `llm`)

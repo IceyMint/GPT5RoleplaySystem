@@ -29,6 +29,23 @@ Root causes tend to be:
 
 Current server behavior is non-blocking; focus on viewer shutdown paths.
 
+## AI Is Connected But Silent
+
+### Symptom: session is connected, but no `chat_response` arrives
+
+By design, each new connection starts with LLM chat output disabled.
+
+Fix:
+
+1) Send `set_llm_chat_enabled` after connect:
+   - `{"type":"set_llm_chat_enabled","data":{"enabled":true}}`
+2) Keep sending normal `process_chat` messages afterward.
+
+Notes:
+
+- If `enabled` is missing/invalid, it is treated as `false`.
+- With chat output disabled, memory/state updates can still run, but no chat actions are emitted.
+
 ## Status Channel Not Working
 
 ### Symptom: status messages go to local chat (channel 0)
@@ -44,7 +61,7 @@ See: `docs/VIEWER_INTEGRATION.md`
 
 Symptom:
 
-- model hits `max_tokens` (500) before completing structured output
+- model hits configured `max_tokens` (default config is `1024`) before completing structured output
 - parse fails because output is truncated
 
 Options:
@@ -104,4 +121,3 @@ Symptom:
 Fix:
 
 - call the global function explicitly: `::shutdown(...)`
-

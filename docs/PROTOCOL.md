@@ -33,6 +33,7 @@ Common fields:
 - `timestamp`: unix seconds (float or int)
 - `participants`: optional list of `{user_id,name}` hints
 - `logged_in_agent`: optional AI persona name (used for self-filtering)
+- `persona` / `ai_name`: optional per-message persona hint (session-local)
 
 ### `environment_update`
 
@@ -60,6 +61,20 @@ Sets the AI's own UUID for the connection:
 ```
 
 Only affects the sending TCP session.
+
+### `set_llm_chat_enabled`
+
+Toggles whether chat output is emitted for this connection:
+
+```json
+{"type":"set_llm_chat_enabled","data":{"enabled":true}}
+```
+
+Notes:
+
+- New connections start with chat output disabled.
+- Send this with `enabled: true` after connect if you want normal chat replies.
+- Missing/invalid `enabled` values are treated as `false`.
 
 ## Outbound Messages (Server -> Viewer)
 
@@ -111,8 +126,10 @@ Periodic status payload (mainly for diagnostics/UI):
     "last_response_ts": 1700000012.0,
     "mood": "neutral",
     "mood_ts": 1700000012.0,
+    "mood_source": "chat",
     "status": "idle",
     "status_ts": 1700000012.0,
+    "status_source": "chat",
     "autonomy_enabled": true
   }
 }

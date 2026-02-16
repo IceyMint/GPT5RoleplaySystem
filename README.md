@@ -53,13 +53,17 @@ Message types used by the server:
 
 - `process_chat`: inbound chat messages from the viewer
 - `environment_update`: environment snapshots from the viewer
+- `set_user_id`: per-session AI UUID override
+- `set_llm_chat_enabled`: toggles whether chat output is emitted for that session
 - `chat_response`: outbound commands for the viewer to execute
 - `status`: outbound status payloads for UI/diagnostics
 
 ## Session model (multi-client)
 
 - Each TCP connection maps to an isolated session with its own controller and memory.
-- `set_user_id` applies only to the connection that sent it; persona is fixed per session.
+- `set_user_id` applies only to the connection that sent it.
+- Persona stays session-local and can be updated from inbound payload hints (`logged_in_agent`, `persona`, `ai_name`).
+- New sessions start with LLM chat output disabled; the viewer should send `set_llm_chat_enabled` with `enabled: true` after connect.
 - `process_chat` can include optional `participants` (list of `{user_id,name}`) to avoid LLM-based name detection.
 - Environment updates are stored per session; only the session that sent them sees them.
 - Session state (rolling buffer + summary) can persist across reconnects when enabled.
@@ -68,7 +72,7 @@ Message types used by the server:
 
 - If `--config` is not provided, the server checks `GPT5_ROLEPLAY_CONFIG`, then `./config.yaml`.
 - For compatibility, it will also look for a sibling `qwenRoleplayAISystem/config.yaml` when no local file exists.
-- Use `config.example.yaml` as a template; avoid committing real API keys.
+- Use `config.yaml` as the schema reference and keep real API keys out of git.
 - Backpressure settings: `GPT5_ROLEPLAY_QUEUE_MAX` and `GPT5_ROLEPLAY_QUEUE_DROP` (`drop_oldest` or `drop_newest`).
 - Chat batching settings: `GPT5_ROLEPLAY_BATCH_WINDOW_MS` and `GPT5_ROLEPLAY_BATCH_MAX`.
 - Episodic experience settings live under `episode_summary`.
@@ -76,8 +80,14 @@ Message types used by the server:
 
 Key config blocks:
 
+- `llm`
+  - `model` selection + optional `bundle_model`/`address_model`
+  - `embedding_model`, `embedding_dimensions`, optional `embedding_base_url`
+  - `reasoning`: optional reasoning effort forwarded to OpenRouter requests
 - `knowledge_storage`
   - `experience_similar_limit`, `experience_score_min`, `experience_score_delta`
+- `facts`
+  - periodic or per-message extraction controls, pending queue thresholds
 - `episode_summary`
   - `enabled`: episodic experience consolidation on/off
   - `min_messages`, `max_messages`: thresholds for episode boundaries
@@ -90,6 +100,13 @@ Key config blocks:
   - `enabled`: autonomy loop + status updates on/off
   - `status_interval_seconds`: status emission cadence
   - `status_channel`: when set, emits a `CHAT` command to that channel
+- `facts_deduplication`
+  - `enabled`: periodic background fact deduplication loop
+  - `interval_hours`: cadence for the deduplication pass
+- `persona_profiles`
+  - optional persona-specific prompt profile text keyed by persona name
+- `max_environment_participants`
+  - caps how many nearby agents are included in prompt context
 
 Persisted session state:
 
@@ -118,3 +135,4 @@ Persisted session state:
 - Addressed-to-me classification includes conversation summary and recent messages, not just the latest text.
 - Experiences are created on episodic boundaries (buffer size / inactivity / forced interval), then embedded and indexed.
 - Status updates can optionally be routed to a non-local chat channel via `autonomy.status_channel`.
+- With `set_llm_chat_enabled: false`, the pipeline still updates memory/facts/state but emits no chat actions.

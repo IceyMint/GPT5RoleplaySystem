@@ -41,6 +41,10 @@ Most useful events come from the pipeline:
   - payload: full structured prompt context for chat mode
 - `event/llm_response_bundle`
   - payload: structured model output (text/actions/facts/hints/summary)
+- `event/llm_prompt_state`
+  - payload: structured prompt context for chat mode when chat output is disabled
+- `event/llm_response_state`
+  - payload: state-only model output (facts/hints/summary/mood/status, no actions)
 - `event/llm_prompt_autonomy`
   - payload: structured prompt context for autonomy mode
 - `event/llm_response_autonomy`
@@ -55,4 +59,3 @@ Most useful events come from the pipeline:
 - These events can include conversation text and environment details.
 - Avoid enabling W&B on sensitive data without considering privacy.
 - The tracer intentionally logs structured payloads to make debugging faster.
-

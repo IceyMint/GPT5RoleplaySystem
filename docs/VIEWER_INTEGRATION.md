@@ -19,7 +19,19 @@ Primary viewer files (outside this repo):
 - Viewer should connect to `127.0.0.1:9999`
 - The viewer should not try to open a TCP server on that port
 
-### 2) `chat_response.parameters` must be parsed
+### 2) Enable chat output after connect
+
+Each new server session starts with LLM chat output disabled.
+
+Viewer requirement:
+
+- Send `{"type":"set_llm_chat_enabled","data":{"enabled":true}}` after establishing the socket.
+
+Why it matters:
+
+- Without this handshake, no `chat_response` actions are emitted for normal chat.
+
+### 3) `chat_response.parameters` must be parsed
 
 The server uses `parameters` to pass extra command metadata, especially
 `parameters.channel`.
@@ -34,7 +46,7 @@ Why it matters:
 - Status/mood routing uses `parameters.channel`
 - Future metadata will also travel through `parameters`
 
-### 3) Channel routing must be honored
+### 4) Channel routing must be honored
 
 Command handlers should honor `parameters.channel`:
 
@@ -45,7 +57,7 @@ Recommended behavior:
 
 - If `parameters.channel` is missing or invalid, fall back to channel `0`
 
-### 4) Exclude the AI's own avatar from nearby agents
+### 5) Exclude the AI's own avatar from nearby agents
 
 The viewer should not include the AI's own avatar in the nearby agents list.
 This prevents confusing participant extraction and context pollution.
