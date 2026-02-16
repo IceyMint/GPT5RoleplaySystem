@@ -12,6 +12,7 @@ class CommandType(str, Enum):
     TOUCH = "TOUCH"
     SIT = "SIT"
     STAND = "STAND"
+    FACE_TARGET = "FACE_TARGET"
     # LOOK_AT = "LOOK_AT"
     # WALK_TO = "WALK_TO"
     # TURN_TO = "TURN_TO"

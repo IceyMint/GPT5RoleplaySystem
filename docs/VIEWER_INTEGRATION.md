@@ -67,6 +67,19 @@ In `gatherNearbyAgents(...)`:
 - Compare agent UUIDs to `gAgent.getID()`
 - Skip the matching UUID
 
+### 6) Support `FACE_TARGET` for avatar body rotation
+
+The server may emit `FACE_TARGET` when the AI should rotate to face someone or
+something without moving.
+
+Viewer requirements:
+
+- Accept `type: "FACE_TARGET"` in `chat_response.commands`.
+- Resolve facing target from:
+  - `target_uuid` when available, otherwise
+  - `x`/`y`/`z` coordinates.
+- Rotate avatar body orientation in place (do not treat this as `FOLLOW`).
+
 ## Optional Behavior
 
 ### `status` message handling

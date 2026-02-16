@@ -32,3 +32,14 @@ def test_build_chat_response():
     data = build_chat_response(actions)
     assert "commands" in data
     assert data["commands"][0]["type"] == "CHAT"
+
+
+def test_build_chat_response_face_target():
+    actions = [
+        Action(command_type=CommandType.FACE_TARGET, target_uuid="target-1", x=1.0, y=2.0, z=3.0)
+    ]
+    data = build_chat_response(actions)
+    assert "commands" in data
+    command = data["commands"][0]
+    assert command["type"] == "FACE_TARGET"
+    assert command["target_uuid"] == "target-1"

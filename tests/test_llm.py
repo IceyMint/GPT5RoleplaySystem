@@ -115,6 +115,21 @@ def test_structured_action_accepts_action_alias():
     assert result.actions[0].content == "Hi"
 
 
+def test_structured_action_parses_face_target():
+    if StructuredAction is None or StructuredBundle is None:
+        return
+    action = StructuredAction(type="FACE_TARGET", target_uuid="target-uuid", x=1.5, y=2.5, z=3.5)
+    bundle = StructuredBundle(text="", actions=[action])
+    result = _bundle_from_structured(bundle, mode="chat")
+    assert result.actions
+    parsed = result.actions[0]
+    assert parsed.command_type.value == "FACE_TARGET"
+    assert parsed.target_uuid == "target-uuid"
+    assert parsed.parameters.get("x") == "1.5"
+    assert parsed.parameters.get("y") == "2.5"
+    assert parsed.parameters.get("z") == "3.5"
+
+
 def test_system_prompt_includes_persona_instructions():
     env = EnvironmentSnapshot()
     context = ConversationContext(

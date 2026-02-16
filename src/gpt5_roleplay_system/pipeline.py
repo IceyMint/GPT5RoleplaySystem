@@ -1390,6 +1390,7 @@ class MessagePipeline:
             CommandType.TOUCH: "interacting",
             CommandType.SIT: "sitting",
             CommandType.STAND: "standing",
+            CommandType.FACE_TARGET: "facing",
             # CommandType.LOOK_AT: "looking",
             # CommandType.WALK_TO: "walking",
             # CommandType.TURN_TO: "turning",

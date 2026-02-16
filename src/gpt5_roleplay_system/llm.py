@@ -675,7 +675,7 @@ class OpenRouterLLMClient(LLMClient):
             "- When 'incoming_batch' is provided, prioritize the 'latest_text' but use earlier messages for context or corrections.\n\n"
             "# TECHNICAL CONSTRAINTS\n"
             "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
-            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND].\n"
+            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
             "- DO NOT mix multiple commands into one action item.\n\n"
@@ -769,7 +769,7 @@ class OpenRouterLLMClient(LLMClient):
             "\n"
             "# TECHNICAL CONSTRAINTS\n"
             "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
-            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND].\n"
+            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
             "- Include 'autonomy_decision' as one of [act, wait, sleep].\n"
@@ -1455,7 +1455,7 @@ def _command_from_structured(action: StructuredAction) -> Optional[Action]:
     content = str(getattr(action, "content", ""))
     if command_type in {CommandType.CHAT, CommandType.EMOTE} and content:
         parameters.setdefault("content", content)
-    if command_type in {CommandType.MOVE}:
+    if command_type in {CommandType.MOVE, CommandType.FACE_TARGET}:
         parameters.setdefault("x", str(getattr(action, "x", 0.0)))
         parameters.setdefault("y", str(getattr(action, "y", 0.0)))
         parameters.setdefault("z", str(getattr(action, "z", 0.0)))

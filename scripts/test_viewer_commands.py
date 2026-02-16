@@ -91,7 +91,7 @@ async def test_coordinator(server: GPT5RoleplayServer, mock_llm: MockLLMClient):
         logger.warning("Test Coordinator: No objects found in environment. Using dummy data.")
 
     # Specific sequence requested by user
-    # CHAT, EMOTE, MOVE, SIT, TOUCH, STAND
+    # CHAT, EMOTE, MOVE, FACE_TARGET, SIT, TOUCH, STAND
     commands_to_test = [
         (CommandType.CHAT, {
             "content": f"I am going to sit on {obj_name}.",
@@ -102,6 +102,11 @@ async def test_coordinator(server: GPT5RoleplayServer, mock_llm: MockLLMClient):
             "parameters": {"content": f"walks over to {obj_name} and prepares to sit."}
         }),
         (CommandType.MOVE, {
+            "x": target_pos["x"], "y": target_pos["y"], "z": target_pos["z"],
+            "parameters": {"x": str(target_pos["x"]), "y": str(target_pos["y"]), "z": str(target_pos["z"])}
+        }),
+        (CommandType.FACE_TARGET, {
+            "target_uuid": target_uuid,
             "x": target_pos["x"], "y": target_pos["y"], "z": target_pos["z"],
             "parameters": {"x": str(target_pos["x"]), "y": str(target_pos["y"]), "z": str(target_pos["z"])}
         }),

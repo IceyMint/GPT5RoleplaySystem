@@ -349,7 +349,8 @@ class ViewerCommandGUI:
         ttk.Button(controls, text="Move To Selected", command=self._move_to_selected).grid(row=0, column=2, padx=4)
         ttk.Button(controls, text="Touch Selected", command=self._touch_selected).grid(row=0, column=3, padx=4)
         ttk.Button(controls, text="Sit Selected", command=self._sit_selected).grid(row=0, column=4, padx=4)
-        ttk.Button(controls, text="Stand", command=self._stand).grid(row=0, column=5, padx=4)
+        ttk.Button(controls, text="Face Selected", command=self._face_selected).grid(row=0, column=5, padx=4)
+        ttk.Button(controls, text="Stand", command=self._stand).grid(row=0, column=6, padx=4)
 
         ttk.Label(controls, text="X").grid(row=1, column=0, sticky=tk.E, pady=(8, 0))
         ttk.Entry(controls, textvariable=self._x_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=(6, 2), pady=(8, 0))
@@ -518,6 +519,38 @@ class ViewerCommandGUI:
 
     def _stand(self) -> None:
         action = Action(command_type=CommandType.STAND)
+        self._send_action(action)
+
+    def _face_selected(self) -> None:
+        entity = self._selected_entity()
+        if not entity:
+            messagebox.showwarning("No selection", "Select an agent or object first.")
+            return
+
+        has_coords = entity.x is not None and entity.y is not None and entity.z is not None
+        has_uuid = bool(entity.uuid)
+        if not has_coords and not has_uuid:
+            messagebox.showwarning("Missing target", "Selected item has neither UUID nor coordinates.")
+            return
+
+        x = float(entity.x) if entity.x is not None else 0.0
+        y = float(entity.y) if entity.y is not None else 0.0
+        z = float(entity.z) if entity.z is not None else 0.0
+
+        params: Dict[str, str] = {}
+        if has_coords:
+            params["x"] = str(x)
+            params["y"] = str(y)
+            params["z"] = str(z)
+
+        action = Action(
+            command_type=CommandType.FACE_TARGET,
+            target_uuid=entity.uuid,
+            x=x,
+            y=y,
+            z=z,
+            parameters=params,
+        )
         self._send_action(action)
 
     def _move_to_xyz(self) -> None:

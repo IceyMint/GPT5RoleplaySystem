@@ -107,6 +107,9 @@ Important:
 - `parameters` is the extension point for extra fields.
 - Channel routing uses `parameters.channel`.
 - Viewer code must parse `parameters` in the `chat_response` handler.
+- `FACE_TARGET` commands may include either:
+  - `target_uuid` for an in-world object/avatar to face, or
+  - `x`/`y`/`z` coordinates for a point to face.
 
 ### `status`
 
