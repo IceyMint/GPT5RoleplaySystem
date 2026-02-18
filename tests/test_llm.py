@@ -131,6 +131,19 @@ def test_structured_action_parses_face_target():
     assert parsed.parameters.get("z") == "3.5"
 
 
+def test_structured_action_uses_parameters_text_when_content_missing():
+    if StructuredAction is None or StructuredBundle is None:
+        return
+    action = StructuredAction(type="CHAT", parameters={"text": "Mama...?"})
+    bundle = StructuredBundle(text="", actions=[action])
+    result = _bundle_from_structured(bundle, mode="chat")
+    assert result.actions
+    parsed = result.actions[0]
+    assert parsed.command_type.value == "CHAT"
+    assert parsed.content == "Mama...?"
+    assert parsed.parameters.get("content") == "Mama...?"
+
+
 def test_system_prompt_includes_persona_instructions():
     env = EnvironmentSnapshot()
     context = ConversationContext(
@@ -532,6 +545,114 @@ def test_request_text_with_model_can_include_provider_without_reasoning():
             "allow_fallbacks": False,
         }
     }
+
+
+def test_request_text_with_model_coerces_content_parts():
+    class _Message:
+        def __init__(self) -> None:
+            self.content = [{"type": "text", "text": "true"}]
+
+    class _Choice:
+        def __init__(self) -> None:
+            self.message = _Message()
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice()]
+
+    class _Completions:
+        def create(self, **_kwargs):
+            return _Completion()
+
+    class _Chat:
+        def __init__(self) -> None:
+            self.completions = _Completions()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.chat = _Chat()
+
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client()
+    client._reasoning = ""
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    response = client._request_text_with_model(
+        model="z-ai/glm-5",
+        system_prompt="sys",
+        user_prompt="user",
+        max_tokens=5,
+        temperature=0.0,
+    )
+
+    assert response == "true"
+
+
+def test_request_structured_recovers_from_unparsed_markdown_content_parts():
+    if StructuredBundle is None:
+        return
+
+    class _Message:
+        def __init__(self) -> None:
+            self.parsed = None
+            self.refusal = None
+            self.content = [
+                {
+                    "type": "text",
+                    "text": (
+                        "```json\n"
+                        "{\n"
+                        '  "autonomy_decision": "act",\n'
+                        '  "next_delay_seconds": 15,\n'
+                        '  "actions": [\n'
+                        '    {"type": "CHAT", "parameters": {"text": "Mama...?"}}\n'
+                        "  ]\n"
+                        "}\n"
+                        "```"
+                    ),
+                }
+            ]
+
+    class _Choice:
+        def __init__(self) -> None:
+            self.message = _Message()
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice()]
+
+    class _Completions:
+        def parse(self, **_kwargs):
+            return _Completion()
+
+    class _Chat:
+        def __init__(self) -> None:
+            self.completions = _Completions()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.chat = _Chat()
+
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client()
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    parsed = client._request_structured(
+        StructuredBundle,
+        {
+            "model": "z-ai/glm-5",
+            "messages": [],
+            "response_format": StructuredBundle,
+        },
+    )
+
+    assert parsed is not None
+    assert parsed.autonomy_decision == "act"
+    assert parsed.next_delay_seconds == 15
+    parsed_bundle = _bundle_from_structured(parsed, mode="autonomous")
+    assert parsed_bundle.actions
+    assert parsed_bundle.actions[0].command_type.value == "CHAT"
+    assert parsed_bundle.actions[0].content == "Mama...?"
 
 
 class _Usage:

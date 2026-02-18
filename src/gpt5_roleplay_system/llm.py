@@ -72,6 +72,36 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _coerce_text_content(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [_coerce_text_content(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(value, dict):
+        for key in ("text", "content", "value"):
+            candidate = _coerce_text_content(value.get(key))
+            if candidate:
+                return candidate
+        return ""
+    for attr in ("text", "content", "value"):
+        candidate_value = getattr(value, attr, None)
+        if candidate_value is value:
+            continue
+        candidate = _coerce_text_content(candidate_value)
+        if candidate:
+            return candidate
+    return ""
+
+
+def _message_content_text(message: Any) -> str:
+    return _coerce_text_content(getattr(message, "content", None)).strip()
+
+
 @dataclass
 class PromptCacheUsageSample:
     prompt_tokens: int
@@ -845,7 +875,21 @@ class OpenRouterLLMClient(LLMClient):
             message = completion.choices[0].message
             if getattr(message, "refusal", None):
                 return None
-            return getattr(message, "parsed", None)
+            parsed = getattr(message, "parsed", None)
+            if parsed is not None:
+                return parsed
+            raw_text = _message_content_text(message)
+            if raw_text:
+                try:
+                    cleaned = _clean_json(raw_text)
+                    return model_class.model_validate_json(cleaned)
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "Structured parse returned unparsed content and cleanup failed: %s. Raw:\n%s",
+                        fallback_exc,
+                        raw_text,
+                    )
+            return None
         except Exception as exc:
             raw_text = None
             # Check for truncation or content filter in API error
@@ -853,7 +897,7 @@ class OpenRouterLLMClient(LLMClient):
             if completion is not None:
                 self._record_cache_usage("structured.parse_error", completion)
             if completion and completion.choices:
-                raw_text = completion.choices[0].message.content
+                raw_text = _message_content_text(completion.choices[0].message)
 
             if not raw_text:
                 # If parse() failed due to ValidationError, it won't have the completion object.
@@ -862,7 +906,8 @@ class OpenRouterLLMClient(LLMClient):
                     debug_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
                     debug_completion = self._client.chat.completions.create(**debug_kwargs)
                     self._record_cache_usage("structured.debug_create", debug_completion)
-                    raw_text = debug_completion.choices[0].message.content
+                    if debug_completion.choices:
+                        raw_text = _message_content_text(debug_completion.choices[0].message)
                 except Exception as debug_exc:
                     logger.error("Failed to fetch raw text for cleanup: %s", debug_exc)
 
@@ -1033,7 +1078,7 @@ class OpenRouterLLMClient(LLMClient):
         if not completion.choices:
             return ""
         message = completion.choices[0].message
-        return message.content or ""
+        return _message_content_text(message)
 
     def _request_text_with_model(
         self,
@@ -1068,7 +1113,7 @@ class OpenRouterLLMClient(LLMClient):
         if not completion.choices:
             return ""
         message = completion.choices[0].message
-        return message.content or ""
+        return _message_content_text(message)
 
     @staticmethod
     def _serialize_payload(payload: Dict[str, Any]) -> str:
@@ -1482,6 +1527,10 @@ def _command_from_structured(action: StructuredAction) -> Optional[Action]:
     parameters_raw = getattr(action, "parameters", {})
     parameters = dict(parameters_raw) if isinstance(parameters_raw, dict) else {}
     content = str(getattr(action, "content", ""))
+    if command_type in {CommandType.CHAT, CommandType.EMOTE} and not content:
+        fallback_content = parameters.get("content", parameters.get("text"))
+        if fallback_content is not None:
+            content = str(fallback_content)
     if command_type in {CommandType.CHAT, CommandType.EMOTE} and content:
         parameters.setdefault("content", content)
     if command_type in {CommandType.MOVE, CommandType.FACE_TARGET}:
