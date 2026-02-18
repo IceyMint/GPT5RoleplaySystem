@@ -396,7 +396,7 @@ def test_chat_bundle_can_override_autonomy_scheduler_hint():
     assert pipeline.consume_autonomy_delay_hint_seconds() == 3600.0
 
 
-def test_state_update_can_override_autonomy_scheduler_hint():
+def test_chat_disabled_does_not_override_autonomy_scheduler_hint():
     pipeline = MessagePipeline(
         persona="Isabella",
         user_id="ai-1",
@@ -421,7 +421,7 @@ def test_state_update_can_override_autonomy_scheduler_hint():
     )
     assert actions == []
     assert pipeline.activity_snapshot(1.0)["autonomy_decision"] == "wait"
-    assert pipeline.consume_autonomy_delay_hint_seconds() == 1200.0
+    assert pipeline.consume_autonomy_delay_hint_seconds() is None
 
 
 def test_autonomy_filter_uses_persona_name_not_uuid():

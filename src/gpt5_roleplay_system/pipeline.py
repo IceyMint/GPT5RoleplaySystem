@@ -351,11 +351,24 @@ class MessagePipeline:
 
         self._last_inbound_ts = time.time()
 
+        participants = self._merge_participants(non_self_chats)
+        if not self._llm_chat_enabled:
+            # Low-cost ingest mode: store chat into memory/experience buffers without running
+            # addressed-to-me classification or bundle/state generation.
+            for chat in non_self_chats:
+                self._rolling_buffer.add_user_message(chat)
+                self._memory.add_message(chat)
+            self._maybe_schedule_fact_sweep(non_self_chats, [], participants)
+            # Ensure deferred compression doesn't accumulate unbounded while silent.
+            self._memory.compress_overflow()
+            self._tracer.log_event("response", {"actions": 0, "batch": len(chats), "chat_output_enabled": False})
+            self._schedule_episode_check()
+            return []
+
         overflow = self._memory.drain_overflow()
         overflow_chats = self._memory_items_to_chats(overflow)
         overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
 
-        participants = self._merge_participants(non_self_chats)
         primary_chat = non_self_chats[-1]
         context = await self._build_context(primary_chat, participants)
 
@@ -394,26 +407,7 @@ class MessagePipeline:
                 addressed = True
                 break
         if not addressed:
-            return []
-
-        incoming_batch = self._collapse_batch(non_self_chats)
-        if not self._llm_chat_enabled:
-            self._tracer.log_event(
-                "llm_prompt_state",
-                self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),
-            )
-            state_update = await self._llm.generate_state_update(primary_chat, context, overflow_chats, incoming_batch)
-            override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
-                state_update.autonomy_decision,
-                state_update.next_delay_seconds,
-            )
-            if override_decision is not None or override_delay is not None:
-                state_update.autonomy_decision = override_decision
-                state_update.next_delay_seconds = override_delay
-            self._tracer.log_event("llm_response_state", self._state_update_payload(state_update))
-            if state_update.summary_update and overflow:
-                self._memory.apply_summary(state_update.summary_update, timestamps=overflow_timestamps)
-            elif overflow:
+            if overflow:
                 if self._summary_strategy == "llm":
                     summary_text = await self._llm.summarize(self._memory.summary(), overflow_chats)
                     if summary_text:
@@ -422,24 +416,10 @@ class MessagePipeline:
                         self._memory.compress_overflow(overflow)
                 else:
                     self._memory.compress_overflow(overflow)
-            if self._facts_enabled and self._facts_mode == "per_message":
-                self._schedule_store_facts(state_update.facts, participants)
-            self._update_participant_hints(state_update.participant_hints)
-            self._update_mood_and_status(
-                LLMResponseBundle(
-                    text="",
-                    actions=[],
-                    facts=state_update.facts,
-                    participant_hints=state_update.participant_hints,
-                    summary=state_update.summary_update,
-                    mood=state_update.mood,
-                    status=state_update.status,
-                ),
-                source="chat",
-            )
-            self._tracer.log_event("response", {"actions": 0, "batch": len(chats), "chat_output_enabled": False})
             self._schedule_episode_check()
             return []
+
+        incoming_batch = self._collapse_batch(non_self_chats)
         self._tracer.log_event(
             "llm_prompt_bundle",
             self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),

@@ -144,4 +144,4 @@ Persisted session state:
 - Addressed-to-me classification includes conversation summary and recent messages, not just the latest text.
 - Experiences are created on episodic boundaries (buffer size / inactivity / forced interval), then embedded and indexed.
 - Status updates can optionally be routed to a non-local chat channel via `autonomy.status_channel`.
-- With `set_llm_chat_enabled: false`, the pipeline still updates memory/facts/state but emits no chat actions.
+- With `set_llm_chat_enabled: false`, the pipeline ingests chat into memory/facts/episodes without addressed-to-me checks or chat actions.
