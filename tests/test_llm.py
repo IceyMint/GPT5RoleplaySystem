@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from gpt5_roleplay_system.llm import (
@@ -218,6 +219,87 @@ def test_bundle_model_override_only_applies_to_bundle_requests():
     client._request_autonomous_bundle(context, {})
 
     assert client.calls == ["bundle-only-model", "default-model", "default-model"]
+
+
+def test_is_addressed_to_me_uses_address_model_with_reasoning():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._api_key = "test-key"
+            self._address_model = "x-ai/grok-4.1-fast"
+            self.captured = {}
+
+        def _format_address_check(self, chat, persona, environment, participants, context):
+            return "address-check-payload"
+
+        def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
+            self.captured = {
+                "model": model,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            return "true"
+
+    client = CaptureClient()
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    addressed = asyncio.run(client.is_addressed_to_me(chat, "persona"))
+
+    assert addressed is True
+    assert client.captured["model"] == "x-ai/grok-4.1-fast"
+    assert client.captured["max_tokens"] == 5
+    assert client.captured["temperature"] == 0.0
+
+
+def test_request_text_with_model_includes_reasoning_extra_body():
+    class _Message:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content: str) -> None:
+            self.message = _Message(content)
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice("true")]
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.last_kwargs = {}
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return _Completion()
+
+    class _Chat:
+        def __init__(self, completions) -> None:
+            self.completions = completions
+
+    class _Client:
+        def __init__(self, completions) -> None:
+            self.chat = _Chat(completions)
+
+    completions = _Completions()
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client(completions)
+    client._reasoning = "low"
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    response = client._request_text_with_model(
+        model="x-ai/grok-4.1-fast",
+        system_prompt="sys",
+        user_prompt="user",
+        max_tokens=5,
+        temperature=0.0,
+    )
+
+    assert response == "true"
+    assert completions.last_kwargs["model"] == "x-ai/grok-4.1-fast"
+    assert completions.last_kwargs["extra_body"] == {
+        "include_reasoning": True,
+        "reasoning_effort": "low",
+    }
 
 
 class _Usage:
