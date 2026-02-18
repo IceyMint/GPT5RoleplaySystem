@@ -1476,6 +1476,10 @@ class MessagePipeline:
 
     async def generate_autonomous_actions(self, recent_activity_window_seconds: float) -> List[Any]:
         if not self._llm_chat_enabled:
+            # Even when chat output is disabled, we still want episodic summaries to flush based on
+            # inactivity/max/forced-interval triggers. Otherwise long "time gaps" can accumulate
+            # in Neo4j experience timelines until chat output is re-enabled.
+            self._schedule_episode_check()
             return []
         activity = self.activity_snapshot(recent_activity_window_seconds)
         if activity["seconds_since_activity"] < recent_activity_window_seconds:

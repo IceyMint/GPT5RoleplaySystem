@@ -170,6 +170,21 @@ class IncomingSchedulerHintLLM(LLMClient):
         )
 
 
+class NeverAddressedLLM(LLMClient):
+    async def is_addressed_to_me(self, chat, persona, environment=None, participants=None, context=None) -> bool:
+        return False
+
+    async def generate_response(self, chat, context) -> LLMResponse:  # pragma: no cover - unused
+        raise NotImplementedError
+
+    async def extract_facts(self, chat, context) -> list[ExtractedFact]:  # pragma: no cover - unused
+        return []
+
+    async def summarize(self, summary, messages) -> str:
+        return ""
+
+
+
 def test_pipeline_returns_action():
     pipeline = MessagePipeline(
         persona="TestPersona",
@@ -1638,6 +1653,48 @@ def test_experience_created_on_episode_boundary():
         await asyncio.sleep(0)
 
     asyncio.run(run_batch())
+
+    experiences = pipeline._experience_store.all()  # type: ignore[attr-defined]
+    assert len(experiences) == 1
+    summary_text = experiences[0].text
+    assert "one" in summary_text
+    assert "two" in summary_text
+
+
+def test_experience_created_via_autonomy_tick_when_chat_disabled():
+    pipeline = MessagePipeline(
+        persona="EpisodePersona",
+        user_id="ai-1",
+        llm=NeverAddressedLLM(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=20, defer_compression=True),
+        rolling_buffer=RollingBuffer(max_items=20),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        episode_config=EpisodeConfig(
+            enabled=True,
+            min_messages=2,
+            max_messages=2,
+            inactivity_seconds=300,
+            forced_interval_seconds=0,
+            overlap_messages=0,
+        ),
+    )
+
+    batch = [
+        {"text": "one", "from_name": "User", "from_id": "user-1", "timestamp": 1},
+        {"text": "two", "from_name": "User", "from_id": "user-1", "timestamp": 2},
+    ]
+
+    async def run() -> None:
+        pipeline.set_llm_chat_enabled(False)
+        await pipeline.process_chat_batch(batch)
+        await pipeline.generate_autonomous_actions(45.0)
+        # Allow the scheduled episode task to complete.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
 
     experiences = pipeline._experience_store.all()  # type: ignore[attr-defined]
     assert len(experiences) == 1
