@@ -9,6 +9,13 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _quote_cypher_identifier(identifier: str) -> str:
+    value = str(identifier or "").strip() or "neo4j"
+    # Cypher uses doubled backticks to escape backticks within identifiers.
+    escaped = value.replace("`", "``")
+    return f"`{escaped}`"
+
+
 def _dedupe_preserve_order(items: List[str]) -> List[str]:
     seen: set[str] = set()
     deduped: List[str] = []
@@ -133,7 +140,7 @@ class Neo4jKnowledgeStore(KnowledgeStore):
         # Try to create the target database first.
         try:
             with self._system_session() as system_session:
-                system_session.run(f"CREATE DATABASE {self._database} IF NOT EXISTS")
+                system_session.run(f"CREATE DATABASE {_quote_cypher_identifier(self._database)} IF NOT EXISTS")
         except Exception as exc:
             logger.warning("Neo4j schema setup: unable to ensure database %s (%s)", self._database, exc)
 

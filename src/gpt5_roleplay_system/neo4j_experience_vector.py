@@ -37,7 +37,7 @@ class Neo4jExperienceVectorIndex:
         self._genai_available = self._check_genai_available()
 
     def is_enabled(self) -> bool:
-        return bool(self._model and self._token)
+        return self._genai_available or self._external_available()
 
     async def add_record_async(self, record: ExperienceRecord, persona_id: str) -> None:
         if not self.is_enabled():
@@ -69,6 +69,8 @@ class Neo4jExperienceVectorIndex:
                 pass
 
     def _check_genai_available(self) -> bool:
+        if not self._model or not self._token:
+            return False
         probe = (
             "RETURN genai.vector.encode('hello', $provider, {token: $token, model: $model}) AS v"
         )
@@ -84,11 +86,14 @@ class Neo4jExperienceVectorIndex:
             except Exception:
                 return False
 
+    def _external_available(self) -> bool:
+        return bool(self._external_embedder and self._external_embedder.is_available())
+
     def _add_record_sync(self, record: ExperienceRecord, persona_id: str) -> None:
         if self._genai_available:
             self._add_with_genai(record, persona_id)
             return
-        if self._external_embedder and self._external_embedder.is_available():
+        if self._external_available():
             self._add_with_external_embedder(record, persona_id)
 
     def _add_with_genai(self, record: ExperienceRecord, persona_id: str) -> None:
@@ -126,7 +131,7 @@ class Neo4jExperienceVectorIndex:
             except Exception:
                 # If genai fails at runtime, fall back to external embedder if available.
                 self._genai_available = False
-                if self._external_embedder and self._external_embedder.is_available():
+                if self._external_available():
                     self._add_with_external_embedder(record, persona_id)
 
     def _add_with_external_embedder(self, record: ExperienceRecord, persona_id: str) -> None:
@@ -165,7 +170,7 @@ class Neo4jExperienceVectorIndex:
     def _search_sync(self, query: str, persona_id: str, top_k: int) -> List[ExperienceRecord]:
         if self._genai_available:
             return self._search_with_genai(query, persona_id, top_k)
-        if self._external_embedder and self._external_embedder.is_available():
+        if self._external_available():
             vectors = self._external_embedder.embed([query])
             if not vectors or not vectors[0]:
                 return []
@@ -252,4 +257,3 @@ def _records_from_query(records) -> List[ExperienceRecord]:
         }
         results.append(ExperienceRecord(text=text, metadata=metadata))
     return results
-

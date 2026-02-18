@@ -513,6 +513,8 @@ class OpenRouterLLMClient(LLMClient):
         base_url: str,
         model: str,
         bundle_model: str = "",
+        summary_model: str = "",
+        facts_model: str = "",
         address_model: str | None = None,
         max_tokens: int = 500,
         temperature: float = 0.6,
@@ -520,6 +522,8 @@ class OpenRouterLLMClient(LLMClient):
         facts_in_bundle: bool = True,
         fallback: Optional[LLMClient] = None,
         reasoning: str = "",
+        provider_order: List[str] | None = None,
+        provider_allow_fallbacks: bool | None = None,
     ) -> None:
         if OpenAI is None:
             raise RuntimeError("openai package is not installed")
@@ -529,12 +533,18 @@ class OpenRouterLLMClient(LLMClient):
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._bundle_model = bundle_model or model
+        self._summary_model = summary_model or model
+        self._facts_model = facts_model or model
         self._address_model = address_model or model
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._timeout = timeout_seconds
         self._facts_in_bundle = bool(facts_in_bundle)
         self._reasoning = reasoning
+        self._provider_order = [str(item).strip() for item in (provider_order or []) if str(item).strip()]
+        self._provider_allow_fallbacks = (
+            bool(provider_allow_fallbacks) if provider_allow_fallbacks is not None else None
+        )
         self._fallback = fallback or RuleBasedLLMClient()
         actual_base_url = self._base_url if self._base_url else None
         self._client = OpenAI(api_key=self._api_key, base_url=actual_base_url, timeout=self._timeout)
@@ -558,6 +568,30 @@ class OpenRouterLLMClient(LLMClient):
             ((sample.cached_read_tokens / sample.prompt_tokens) * 100.0) if sample.prompt_tokens else 0.0,
             sample.cache_discount,
         )
+
+    def _provider_payload(self) -> Dict[str, Any] | None:
+        order = [str(item).strip() for item in getattr(self, "_provider_order", []) if str(item).strip()]
+        allow_fallbacks = getattr(self, "_provider_allow_fallbacks", None)
+        if not order and allow_fallbacks is None:
+            return None
+        payload: Dict[str, Any] = {}
+        if order:
+            payload["order"] = order
+        if allow_fallbacks is not None:
+            payload["allow_fallbacks"] = bool(allow_fallbacks)
+        return payload
+
+    def _apply_extra_body(self, kwargs: Dict[str, Any], *, include_reasoning: bool, include_provider: bool) -> None:
+        extra_body: Dict[str, Any] = dict(kwargs.get("extra_body") or {})
+        if include_reasoning and getattr(self, "_reasoning", ""):
+            extra_body["include_reasoning"] = True
+            extra_body["reasoning_effort"] = str(getattr(self, "_reasoning"))
+        if include_provider:
+            provider_payload = self._provider_payload()
+            if provider_payload:
+                extra_body["provider"] = provider_payload
+        if extra_body:
+            kwargs["extra_body"] = extra_body
 
     async def is_addressed_to_me(
         self,
@@ -604,7 +638,14 @@ class OpenRouterLLMClient(LLMClient):
             ],
         }
         prompt = "Summarize the conversation for long-term memory, concise and factual."
-        payload = await asyncio.to_thread(self._request_text, prompt, json.dumps(content, ensure_ascii=True))
+        payload = await asyncio.to_thread(
+            self._request_text_with_model,
+            self._summary_model,
+            prompt,
+            json.dumps(content, ensure_ascii=True),
+            self._max_tokens,
+            self._temperature,
+        )
         return payload.strip() if payload else summary
 
     async def generate_bundle(
@@ -852,11 +893,7 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
         }
-        if self._reasoning:
-            kwargs["extra_body"] = {
-                "include_reasoning": True,
-                "reasoning_effort": self._reasoning,
-        }
+        self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
         return self._request_structured(StructuredBundle, kwargs)
 
     def _request_state_update(
@@ -876,11 +913,7 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
         }
-        if self._reasoning:
-            kwargs["extra_body"] = {
-                "include_reasoning": True,
-                "reasoning_effort": self._reasoning,
-            }
+        self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
         return self._request_structured(StructuredStateUpdate, kwargs)
 
     def _request_autonomous_bundle(
@@ -898,11 +931,7 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
         }
-        if self._reasoning:
-            kwargs["extra_body"] = {
-                "include_reasoning": True,
-                "reasoning_effort": self._reasoning,
-            }
+        self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
         return self._request_structured(StructuredBundle, kwargs)
 
     def _request_facts_from_chat(self, chat: InboundChat, context: ConversationContext) -> Optional[StructuredFactsOnly]:
@@ -935,7 +964,7 @@ class OpenRouterLLMClient(LLMClient):
         if not evidence_messages:
             return None
         kwargs = {
-            "model": self._model,
+            "model": self._facts_model,
             "messages": [
                 {"role": "system", "content": self._facts_system_prompt()},
                 {
@@ -956,11 +985,7 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": max(self._max_tokens, 500),
             "temperature": 0.0,
         }
-        if self._reasoning:
-            kwargs["extra_body"] = {
-                "include_reasoning": True,
-                "reasoning_effort": self._reasoning,
-            }
+        self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
         return self._request_structured(StructuredFactsOnly, kwargs)
 
     def extract_facts_from_evidence_sync(
@@ -999,12 +1024,10 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": int(max_tokens if max_tokens is not None else self._max_tokens),
             "temperature": float(temperature if temperature is not None else self._temperature),
         }
-        reasoning_enabled = bool(self._reasoning) if include_reasoning is None else bool(include_reasoning and self._reasoning)
-        if reasoning_enabled:
-            kwargs["extra_body"] = {
-                "include_reasoning": True,
-                "reasoning_effort": self._reasoning,
-            }
+        reasoning_enabled = (
+            bool(self._reasoning) if include_reasoning is None else bool(include_reasoning and self._reasoning)
+        )
+        self._apply_extra_body(kwargs, include_reasoning=reasoning_enabled, include_provider=True)
         completion = self._client.chat.completions.create(**kwargs)
         self._record_cache_usage("text.create", completion)
         if not completion.choices:
@@ -1019,6 +1042,9 @@ class OpenRouterLLMClient(LLMClient):
         user_prompt: str,
         max_tokens: int,
         temperature: float,
+        *,
+        include_reasoning: bool | None = None,
+        include_provider: bool = False,
     ) -> str:
         kwargs = {
             "model": model,
@@ -1029,11 +1055,14 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if self._reasoning:
-            kwargs["extra_body"] = {
-                "include_reasoning": True,
-                "reasoning_effort": self._reasoning,
-            }
+        reasoning_enabled = (
+            bool(self._reasoning) if include_reasoning is None else bool(include_reasoning and self._reasoning)
+        )
+        self._apply_extra_body(
+            kwargs,
+            include_reasoning=reasoning_enabled,
+            include_provider=bool(include_provider),
+        )
         completion = self._client.chat.completions.create(**kwargs)
         self._record_cache_usage("text_with_model.create", completion)
         if not completion.choices:

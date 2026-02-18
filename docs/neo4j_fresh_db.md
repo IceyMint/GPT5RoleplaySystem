@@ -17,9 +17,9 @@ Then run:
 
 ```cypher
 :use system
-CREATE DATABASE gpt5-roleplay IF NOT EXISTS;
+CREATE DATABASE `gpt5-roleplay` IF NOT EXISTS;
 
-:use gpt5-roleplay
+:use `gpt5-roleplay`
 CREATE CONSTRAINT person_user_id_unique IF NOT EXISTS
 FOR (p:Person) REQUIRE p.user_id IS UNIQUE;
 
@@ -42,5 +42,5 @@ OPTIONS {indexConfig: {`vector.dimensions`: 3072, `vector.similarity_function`: 
 - If you already have duplicate `name_lower` values, the `person_name_lower_unique` constraint may fail.
 - Uniqueness for merges should be based on `user_id` (UUID). Names should be treated as aliases/display values.
 - Adjust vector dimensions if you change embedding models.
-- For Neo4j GenAI embeddings, set `OPENAI_API_KEY` in the environment (or `api_keys.openai_api_key` in config).
+- For Neo4j GenAI embeddings, set `NEO4J_GENAI_API_KEY` (or `OPENAI_API_KEY`) in the environment, or `api_keys.openai_api_key` in config.
 - Experience nodes are created from episodic summaries (see `episode_summary` in `config.yaml`).

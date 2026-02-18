@@ -271,10 +271,13 @@ def _build_llm_client(config: ServerConfig):
     if config.llm.api_key:
         try:
             logger.info(
-                "LLM: OpenRouter enabled (model=%s, bundle_model=%s, address_model=%s, base_url=%s)",
+                "LLM: OpenRouter enabled (model=%s, bundle_model=%s, summary_model=%s, facts_model=%s, address_model=%s, provider_order=%s, base_url=%s)",
                 config.llm.model,
                 config.llm.bundle_model or config.llm.model,
+                config.llm.summary_model or config.llm.model,
+                config.llm.facts_model or config.llm.model,
                 config.llm.address_model or config.llm.model,
+                ",".join(config.llm.provider_order) if config.llm.provider_order else "default",
                 config.llm.base_url,
             )
             return OpenRouterLLMClient(
@@ -282,6 +285,8 @@ def _build_llm_client(config: ServerConfig):
                 base_url=config.llm.base_url,
                 model=config.llm.model,
                 bundle_model=config.llm.bundle_model,
+                summary_model=config.llm.summary_model,
+                facts_model=config.llm.facts_model,
                 address_model=config.llm.address_model,
                 max_tokens=config.llm.max_tokens,
                 temperature=config.llm.temperature,
@@ -289,6 +294,8 @@ def _build_llm_client(config: ServerConfig):
                 facts_in_bundle=config.facts.in_bundle,
                 fallback=RuleBasedLLMClient(),
                 reasoning=config.llm.reasoning,
+                provider_order=config.llm.provider_order,
+                provider_allow_fallbacks=config.llm.provider_allow_fallbacks,
             )
         except RuntimeError as exc:
             logger.warning("LLM: OpenRouter client unavailable (%s); using rule-based fallback", exc)
@@ -317,28 +324,45 @@ def _build_tracer(config: ServerConfig):
 
 def _build_experience_index(config: ServerConfig, knowledge_store: KnowledgeStore):
     embedding_model = config.llm.embedding_model
-    embedding_api_key = config.llm.embedding_api_key or config.llm.api_key
-    if not embedding_model or not embedding_api_key:
+    if not embedding_model:
         return None
+    embedding_api_key = config.llm.embedding_api_key or config.llm.api_key
     try:
-        embedder = OpenAIEmbeddingClient(
-            api_key=embedding_api_key,
-            base_url=config.llm.embedding_base_url,
-            model=embedding_model,
-            timeout_seconds=config.llm.timeout_seconds,
-        )
+        if embedding_api_key:
+            embedder = OpenAIEmbeddingClient(
+                api_key=embedding_api_key,
+                base_url=config.llm.embedding_base_url,
+                model=embedding_model,
+                timeout_seconds=config.llm.timeout_seconds,
+            )
+        else:
+            embedder = NullEmbeddingClient()
     except RuntimeError:
         embedder = NullEmbeddingClient()
     if isinstance(knowledge_store, Neo4jKnowledgeStore):
-        vector_config = Neo4jVectorConfig(dimensions=config.llm.embedding_dimensions)
+        if config.llm.neo4j_genai_only:
+            # Explicitly disable external embedding fallback in strict GenAI mode.
+            embedder = NullEmbeddingClient()
+        vector_config = Neo4jVectorConfig(
+            dimensions=config.llm.embedding_dimensions,
+            provider=config.llm.neo4j_genai_provider or Neo4jVectorConfig().provider,
+        )
+        genai_token = config.llm.neo4j_genai_api_key
+        if not genai_token and embedding_api_key and not str(embedding_api_key).startswith("sk-or-"):
+            # Backward compatibility: if embedding key is likely OpenAI, reuse it for Neo4j GenAI.
+            genai_token = embedding_api_key
         index = Neo4jExperienceVectorIndex(
             driver=knowledge_store.driver,
             database=knowledge_store.database,
             config=vector_config,
-            token=embedding_api_key,
+            token=genai_token,
             model=embedding_model,
             external_embedder=embedder,
         )
+        if config.llm.neo4j_genai_only and not getattr(index, "_genai_available", False):
+            logger.warning(
+                "Experience index: strict Neo4j GenAI mode is enabled but genai.vector.encode is unavailable; semantic experience search disabled."
+            )
         return index if index.is_enabled() else None
     index = ExperienceVectorIndex(embedder=embedder)
     return index if index.is_enabled() else None
@@ -468,6 +492,7 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
     from .llm import OpenRouterLLMClient
     if not isinstance(llm_client, OpenRouterLLMClient):
         return
+    dedupe_model = str(getattr(llm_client, "_facts_model", getattr(llm_client, "_model", "")) or "")
 
     interval_seconds = config.facts_deduplication.interval_hours * 3600
     if interval_seconds <= 0:
@@ -535,11 +560,14 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
                 response_text = ""
                 try:
                     response_text = await asyncio.to_thread(
-                        llm_client._request_text,
+                        llm_client._request_text_with_model,
+                        dedupe_model,
                         "You are a precision data cleaner.",
                         prompt,
-                        temperature=0.0,
+                        llm_client._max_tokens,
+                        0.0,
                         include_reasoning=False,
+                        include_provider=True,
                     )
                     try:
                         refined_facts = _parse_deduped_facts_response(response_text)
@@ -549,11 +577,14 @@ async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: Knowl
                             "Return ONLY valid minified JSON with exactly one key named \"facts\"."
                         )
                         response_text = await asyncio.to_thread(
-                            llm_client._request_text,
+                            llm_client._request_text_with_model,
+                            dedupe_model,
                             "You are a precision data cleaner.",
                             retry_prompt,
-                            temperature=0.0,
+                            llm_client._max_tokens,
+                            0.0,
                             include_reasoning=False,
+                            include_provider=True,
                         )
                         refined_facts = _parse_deduped_facts_response(response_text)
                     deduped_ts = time.time()

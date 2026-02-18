@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -15,14 +15,21 @@ class LLMConfig:
     api_key: str = ""
     model: str = "deepseek/deepseek-v3.2"
     bundle_model: str = ""
+    summary_model: str = ""
+    facts_model: str = ""
     address_model: str = ""
     embedding_model: str = ""
     embedding_api_key: str = ""
+    neo4j_genai_api_key: str = ""
+    neo4j_genai_provider: str = "OpenAI"
+    neo4j_genai_only: bool = False
     embedding_dimensions: int = 3072
     max_tokens: int = 1024
     temperature: float = 0.6
     timeout_seconds: float = 30.0
     reasoning: str = ""
+    provider_order: List[str] = field(default_factory=list)
+    provider_allow_fallbacks: Optional[bool] = None
 
 
 @dataclass
@@ -155,6 +162,24 @@ def _env_bool(name: str, default: bool) -> bool:
     return bool(default)
 
 
+def _parse_optional_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return None
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def _pick_model(llm_data: Dict[str, Any]) -> str:
     if not llm_data:
         return "deepseek/deepseek-v3.2"
@@ -184,21 +209,61 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
     facts_deduplication_raw = raw.get("facts_deduplication", {}) if isinstance(raw.get("facts_deduplication"), dict) else {}
     wandb_raw = raw.get("wandb", {}) if isinstance(raw.get("wandb"), dict) else {}
     persona_profiles_raw = raw.get("persona_profiles", {}) if isinstance(raw.get("persona_profiles"), dict) else {}
+    provider_raw = llm_raw.get("provider", {}) if isinstance(llm_raw.get("provider"), dict) else {}
+
+    provider_order: List[str] = []
+    provider_order_env = os.getenv("GPT5_ROLEPLAY_LLM_PROVIDER_ORDER", "").strip()
+    if provider_order_env:
+        provider_order = [item.strip() for item in provider_order_env.split(",") if item.strip()]
+    else:
+        order_raw = provider_raw.get("order", [])
+        if isinstance(order_raw, str):
+            provider_order = [item.strip() for item in order_raw.split(",") if item.strip()]
+        elif isinstance(order_raw, list):
+            provider_order = [str(item).strip() for item in order_raw if str(item).strip()]
+
+    provider_allow_fallbacks = _parse_optional_bool(
+        os.getenv(
+            "GPT5_ROLEPLAY_LLM_PROVIDER_ALLOW_FALLBACKS",
+            provider_raw.get("allow_fallbacks"),
+        )
+    )
 
     llm_config = LLMConfig(
         base_url=os.getenv("GPT5_ROLEPLAY_LLM_BASE_URL", llm_raw.get("base_url", LLMConfig().base_url)),
         api_key=os.getenv("OPENROUTER_API_KEY", api_keys.get("openrouter_api_key", "")),
         model=os.getenv("GPT5_ROLEPLAY_LLM_MODEL", _pick_model(llm_raw)),
         bundle_model=os.getenv("GPT5_ROLEPLAY_LLM_BUNDLE_MODEL", llm_raw.get("bundle_model", "")),
+        summary_model=os.getenv("GPT5_ROLEPLAY_LLM_SUMMARY_MODEL", llm_raw.get("summary_model", "")),
+        facts_model=os.getenv("GPT5_ROLEPLAY_LLM_FACTS_MODEL", llm_raw.get("facts_model", "")),
         address_model=os.getenv("GPT5_ROLEPLAY_LLM_ADDRESS_MODEL", llm_raw.get("address_model", "")),
         embedding_base_url=os.getenv("GPT5_ROLEPLAY_LLM_EMBEDDING_BASE_URL", llm_raw.get("embedding_base_url", "")),
         embedding_model=os.getenv("GPT5_ROLEPLAY_LLM_EMBEDDING_MODEL", llm_raw.get("embedding_model", "")),
         embedding_api_key=os.getenv(
-            "OPENAI_API_KEY",
+            "GPT5_ROLEPLAY_LLM_EMBEDDING_API_KEY",
             api_keys.get(
                 "embedding_api_key",
-                api_keys.get("openai_api_key", llm_raw.get("embedding_api_key", "")),
+                llm_raw.get(
+                    "embedding_api_key",
+                    api_keys.get("openai_api_key", os.getenv("OPENAI_API_KEY", "")),
+                ),
             ),
+        ),
+        neo4j_genai_api_key=os.getenv(
+            "NEO4J_GENAI_API_KEY",
+            llm_raw.get("neo4j_genai_api_key", api_keys.get("openai_api_key", os.getenv("OPENAI_API_KEY", ""))),
+        ),
+        neo4j_genai_provider=os.getenv(
+            "NEO4J_GENAI_PROVIDER",
+            llm_raw.get("neo4j_genai_provider", LLMConfig().neo4j_genai_provider),
+        ),
+        neo4j_genai_only=bool(
+            _parse_optional_bool(
+                os.getenv(
+                    "NEO4J_GENAI_ONLY",
+                    llm_raw.get("neo4j_genai_only"),
+                )
+            )
         ),
         embedding_dimensions=int(
             os.getenv(
@@ -210,6 +275,8 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         temperature=float(os.getenv("GPT5_ROLEPLAY_LLM_TEMPERATURE", llm_raw.get("temperature", 0.6))),
         timeout_seconds=float(os.getenv("GPT5_ROLEPLAY_LLM_TIMEOUT", llm_raw.get("timeout", 30.0))),
         reasoning=os.getenv("GPT5_ROLEPLAY_LLM_REASONING", llm_raw.get("reasoning", "")),
+        provider_order=provider_order,
+        provider_allow_fallbacks=provider_allow_fallbacks,
     )
 
     summary_strategy = os.getenv(

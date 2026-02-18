@@ -81,8 +81,11 @@ Message types used by the server:
 Key config blocks:
 
 - `llm`
-  - `model` selection + optional `bundle_model`/`address_model`
+  - `model` selection + optional `bundle_model`/`summary_model`/`facts_model`/`address_model`
+  - optional OpenRouter provider routing via `provider.order` and `provider.allow_fallbacks`
   - `embedding_model`, `embedding_dimensions`, optional `embedding_base_url`
+  - `neo4j_genai_provider` for Neo4j `genai.vector.encode` (default `OpenAI`)
+  - `neo4j_genai_only` to disable fallback embeddings and require Neo4j GenAI
   - `reasoning`: optional reasoning effort forwarded to OpenRouter requests
 - `knowledge_storage`
   - `experience_similar_limit`, `experience_score_min`, `experience_score_delta`

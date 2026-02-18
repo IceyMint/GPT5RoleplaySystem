@@ -221,6 +221,133 @@ def test_bundle_model_override_only_applies_to_bundle_requests():
     assert client.calls == ["bundle-only-model", "default-model", "default-model"]
 
 
+def test_summarize_uses_summary_model():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._api_key = "test-key"
+            self._summary_model = "google/gemini-3-flash-preview"
+            self._max_tokens = 111
+            self._temperature = 0.5
+            self.captured = {}
+
+        def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
+            self.captured = {
+                "model": model,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            return "summary result"
+
+    client = CaptureClient()
+    messages = [InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})]
+    result = asyncio.run(client.summarize("old summary", messages))
+
+    assert result == "summary result"
+    assert client.captured["model"] == "google/gemini-3-flash-preview"
+    assert client.captured["max_tokens"] == 111
+    assert client.captured["temperature"] == 0.5
+
+
+def test_request_bundle_includes_provider_routing_in_extra_body():
+    if StructuredBundle is None:
+        return
+
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._bundle_model = "moonshotai/kimi-k2.5"
+            self._max_tokens = 256
+            self._temperature = 0.2
+            self._reasoning = "low"
+            self._provider_order = ["siliconflow"]
+            self._provider_allow_fallbacks = False
+            self.captured = {}
+
+        def _system_prompt_for_context(self, context):
+            return "sys"
+
+        def _format_context(self, chat, context, overflow, incoming_batch):
+            return "ctx"
+
+        def _request_structured(self, model_class, kwargs):
+            self.captured = kwargs
+            return None
+
+    env = EnvironmentSnapshot()
+    context = ConversationContext(
+        persona="persona",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[],
+        people_facts={},
+        recent_messages=[],
+        summary="",
+        related_experiences=[],
+        summary_meta={},
+        agent_state={},
+    )
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+
+    client = CaptureClient()
+    client._request_bundle(chat, context, None, None)
+
+    assert client.captured["model"] == "moonshotai/kimi-k2.5"
+    assert client.captured["extra_body"]["provider"] == {
+        "order": ["siliconflow"],
+        "allow_fallbacks": False,
+    }
+    assert client.captured["extra_body"]["include_reasoning"] is True
+    assert client.captured["extra_body"]["reasoning_effort"] == "low"
+
+
+def test_request_facts_uses_facts_model_with_provider_routing():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._facts_model = "z-ai/glm-5"
+            self._max_tokens = 256
+            self._reasoning = "low"
+            self._provider_order = ["siliconflow"]
+            self._provider_allow_fallbacks = False
+            self.captured = {}
+
+        def _facts_system_prompt(self):
+            return "facts-sys"
+
+        def _format_facts_context_from_messages(
+            self,
+            evidence_messages,
+            participants,
+            persona,
+            user_id,
+            summary,
+            summary_meta,
+            related_experiences,
+            people_facts,
+        ):
+            return "facts-ctx"
+
+        def _request_structured(self, model_class, kwargs):
+            self.captured = kwargs
+            return None
+
+    client = CaptureClient()
+    msg = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client._request_facts_from_messages(
+        evidence_messages=[msg],
+        participants=[],
+        persona="persona",
+        user_id="ai-uuid",
+    )
+
+    assert client.captured["model"] == "z-ai/glm-5"
+    assert client.captured["extra_body"]["provider"] == {
+        "order": ["siliconflow"],
+        "allow_fallbacks": False,
+    }
+    assert client.captured["extra_body"]["include_reasoning"] is True
+
+
 def test_is_addressed_to_me_uses_address_model_with_reasoning():
     class CaptureClient(OpenRouterLLMClient):
         def __init__(self) -> None:
@@ -299,6 +426,111 @@ def test_request_text_with_model_includes_reasoning_extra_body():
     assert completions.last_kwargs["extra_body"] == {
         "include_reasoning": True,
         "reasoning_effort": "low",
+    }
+
+
+def test_request_text_with_model_does_not_include_provider_routing():
+    class _Message:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content: str) -> None:
+            self.message = _Message(content)
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice("true")]
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.last_kwargs = {}
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return _Completion()
+
+    class _Chat:
+        def __init__(self, completions) -> None:
+            self.completions = completions
+
+    class _Client:
+        def __init__(self, completions) -> None:
+            self.chat = _Chat(completions)
+
+    completions = _Completions()
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client(completions)
+    client._reasoning = ""
+    client._provider_order = ["siliconflow"]
+    client._provider_allow_fallbacks = False
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    response = client._request_text_with_model(
+        model="x-ai/grok-4.1-fast",
+        system_prompt="sys",
+        user_prompt="user",
+        max_tokens=5,
+        temperature=0.0,
+    )
+
+    assert response == "true"
+    assert "extra_body" not in completions.last_kwargs
+
+
+def test_request_text_with_model_can_include_provider_without_reasoning():
+    class _Message:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content: str) -> None:
+            self.message = _Message(content)
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice("true")]
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.last_kwargs = {}
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return _Completion()
+
+    class _Chat:
+        def __init__(self, completions) -> None:
+            self.completions = completions
+
+    class _Client:
+        def __init__(self, completions) -> None:
+            self.chat = _Chat(completions)
+
+    completions = _Completions()
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client(completions)
+    client._reasoning = "low"
+    client._provider_order = ["siliconflow"]
+    client._provider_allow_fallbacks = False
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    response = client._request_text_with_model(
+        model="z-ai/glm-5",
+        system_prompt="sys",
+        user_prompt="user",
+        max_tokens=5,
+        temperature=0.0,
+        include_reasoning=False,
+        include_provider=True,
+    )
+
+    assert response == "true"
+    assert completions.last_kwargs["extra_body"] == {
+        "provider": {
+            "order": ["siliconflow"],
+            "allow_fallbacks": False,
+        }
     }
 
 

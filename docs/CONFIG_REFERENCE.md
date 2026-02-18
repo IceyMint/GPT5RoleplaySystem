@@ -26,13 +26,16 @@ Supported keys:
 
 - `openrouter_api_key`: used as the primary LLM key
 - `embedding_api_key`: optional embedding key (falls back to `openai_api_key`, then `OPENAI_API_KEY`)
-- `openai_api_key`: used for embeddings / Neo4j GenAI token
+- `openai_api_key`: default OpenAI key used by Neo4j GenAI (and as embedding fallback)
 - `wandb_api_key`: used for W&B logging
 
 Environment variables override these:
 
 - `OPENROUTER_API_KEY`
+- `GPT5_ROLEPLAY_LLM_EMBEDDING_API_KEY`
 - `OPENAI_API_KEY`
+- `NEO4J_GENAI_API_KEY`
+- `NEO4J_GENAI_PROVIDER`
 - `WANDB_API_KEY`
 
 ## `llm`
@@ -44,8 +47,15 @@ Primary LLM settings:
 - `thinking_model`: preferred; used when present
 - `models`: compatibility fallback map; first useful entry is selected
 - `bundle_model`: optional override used only for `generate_bundle` (main chat reply path)
+- `summary_model`: optional override used only for conversation summarization
+- `facts_model`: optional override used for durable fact extraction and facts deduplication refinement
 - `address_model`: cheap/fast model for addressed-to-me classification
+- `provider.order`: optional OpenRouter provider priority list for roleplay/autonomy model calls (example: `["siliconflow"]`)
+- `provider.allow_fallbacks`: optional OpenRouter provider fallback flag (`false` keeps routing pinned to `provider.order`)
 - `embedding_model`: embedding model id (for similarity search)
+- `neo4j_genai_api_key`: optional explicit key for Neo4j `genai.vector.encode` (defaults to `openai_api_key` / `OPENAI_API_KEY`)
+- `neo4j_genai_provider`: provider passed to Neo4j GenAI (default: `OpenAI`)
+- `neo4j_genai_only`: when `true`, disables external embedding fallback and requires Neo4j GenAI to be available
 - `embedding_dimensions`: vector dimension (must match DB index)
 - `max_tokens`: completion cap for model responses
 - `temperature`: generation temperature
@@ -57,14 +67,22 @@ Environment overrides:
 - `GPT5_ROLEPLAY_LLM_BASE_URL`
 - `GPT5_ROLEPLAY_LLM_MODEL`
 - `GPT5_ROLEPLAY_LLM_BUNDLE_MODEL`
+- `GPT5_ROLEPLAY_LLM_SUMMARY_MODEL`
+- `GPT5_ROLEPLAY_LLM_FACTS_MODEL`
 - `GPT5_ROLEPLAY_LLM_ADDRESS_MODEL`
 - `GPT5_ROLEPLAY_LLM_EMBEDDING_BASE_URL`
 - `GPT5_ROLEPLAY_LLM_EMBEDDING_MODEL`
+- `GPT5_ROLEPLAY_LLM_EMBEDDING_API_KEY`
 - `GPT5_ROLEPLAY_LLM_EMBEDDING_DIMENSIONS`
 - `GPT5_ROLEPLAY_LLM_MAX_TOKENS`
 - `GPT5_ROLEPLAY_LLM_TEMPERATURE`
 - `GPT5_ROLEPLAY_LLM_TIMEOUT`
 - `GPT5_ROLEPLAY_LLM_REASONING`
+- `GPT5_ROLEPLAY_LLM_PROVIDER_ORDER` (comma-separated, e.g. `siliconflow`)
+- `GPT5_ROLEPLAY_LLM_PROVIDER_ALLOW_FALLBACKS`
+- `NEO4J_GENAI_API_KEY`
+- `NEO4J_GENAI_PROVIDER`
+- `NEO4J_GENAI_ONLY`
 
 ## `knowledge_storage`
 
@@ -135,7 +153,7 @@ Neo4j connection:
 - `uri`: e.g., `bolt://localhost:7687`
 - `user`: Neo4j username
 - `password`: Neo4j password
-- `name`: Neo4j database name (no underscores)
+- `name`: Neo4j database name (hyphenated names are supported; creation is identifier-quoted)
 
 Environment overrides:
 
