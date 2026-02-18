@@ -89,6 +89,7 @@ Key config blocks:
   - `reasoning`: optional reasoning effort forwarded to OpenRouter requests
 - `knowledge_storage`
   - `experience_similar_limit`, `experience_score_min`, `experience_score_delta`
+  - optional routine summaries: `routine_summary_enabled`, `routine_summary_limit`, `routine_summary_min_count`
 - `facts`
   - periodic or per-message extraction controls, pending queue thresholds
 - `episode_summary`

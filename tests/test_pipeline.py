@@ -1447,6 +1447,79 @@ def test_semantic_experience_score_gating():
     assert "low" not in texts
 
 
+def test_pipeline_adds_routine_summaries_non_destructively():
+    llm = ContextCaptureLLM()
+    store = ExperienceStore()
+    store.add(
+        "We had ramen together on a rainy evening near the station.",
+        {
+            "experience_id": "r1",
+            "timestamp_end": "2026-02-14 20:11:00",
+            "timestamp": 1707941460.0,
+        },
+        persona_id="TestPersona",
+    )
+    store.add(
+        "We had ramen together on a rainy evening near the station and chatted quietly.",
+        {
+            "experience_id": "r2",
+            "timestamp_end": "2026-02-16 20:25:00",
+            "timestamp": 1708115100.0,
+        },
+        persona_id="TestPersona",
+    )
+    store.add(
+        "We visited a bookstore at noon.",
+        {
+            "experience_id": "other",
+            "timestamp_end": "2026-02-16 12:00:00",
+            "timestamp": 1708084800.0,
+        },
+        persona_id="TestPersona",
+    )
+
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=store,
+        tracer=NoOpTracer(),
+        routine_summary_enabled=True,
+        routine_summary_limit=2,
+        routine_summary_min_count=2,
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "What do you remember about ramen nights?",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 9,
+            }
+        )
+    )
+
+    assert llm.contexts
+    related = llm.contexts[-1].related_experiences
+    assert any(item.get("metadata", {}).get("source") == "routine_summary" for item in related)
+    routine_texts = [
+        item.get("text", "")
+        for item in related
+        if item.get("metadata", {}).get("source") == "routine_summary"
+    ]
+    assert any("similar experiences" in text for text in routine_texts)
+    raw_texts = [
+        item.get("text", "")
+        for item in related
+        if item.get("metadata", {}).get("source") != "routine_summary"
+    ]
+    assert any("ramen" in text.lower() for text in raw_texts)
+
+
 def test_pipeline_logs_llm_prompt_and_response():
     tracer = CaptureTracer()
     pipeline = MessagePipeline(

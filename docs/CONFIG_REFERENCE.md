@@ -92,6 +92,9 @@ Experience retrieval knobs:
 - `experience_similar_limit`: top-k retrieved experiences
 - `experience_score_min`: minimum similarity score gate
 - `experience_score_delta`: max allowed drop from the top score
+- `routine_summary_enabled`: include compact routine-pattern summaries in `related_experiences`
+- `routine_summary_limit`: max routine summary lines added to context
+- `routine_summary_min_count`: minimum matching experiences required before a routine summary is emitted
 
 ## `facts`
 

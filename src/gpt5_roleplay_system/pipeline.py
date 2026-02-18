@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 import time
 import unicodedata
@@ -60,6 +61,9 @@ class MessagePipeline:
         experience_top_k: int = 3,
         experience_score_min: float = 0.78,
         experience_score_delta: float = 0.03,
+        routine_summary_enabled: bool = False,
+        routine_summary_limit: int = 2,
+        routine_summary_min_count: int = 2,
         max_environment_participants: int = 10,
         facts_config: FactsConfig | None = None,
         episode_config: EpisodeConfig | None = None,
@@ -81,6 +85,10 @@ class MessagePipeline:
         self._experience_top_k = experience_top_k
         self._experience_score_min = experience_score_min
         self._experience_score_delta = experience_score_delta
+        self._routine_summary_enabled = bool(routine_summary_enabled)
+        self._routine_summary_limit = max(0, int(routine_summary_limit))
+        self._routine_summary_min_count = max(2, int(routine_summary_min_count))
+        self._routine_candidate_limit = max(self._experience_top_k, self._experience_top_k * 4)
         self._max_environment_participants = max_environment_participants
         self._participant_hints: List[Participant] = []
         self._persona_profiles = {str(k).casefold(): str(v) for k, v in (persona_profiles or {}).items() if k and v}
@@ -585,17 +593,36 @@ class MessagePipeline:
             }
         recent = self._memory.recent()
         query = (query_text or (chat.text if chat else "")).strip()
-        related = self._similarity.search(
+        persona_experiences = self._experiences_for_persona(self._experience_store.all())
+        candidate_limit = self._experience_top_k
+        if self._routine_summary_enabled and self._routine_summary_limit > 0:
+            candidate_limit = max(candidate_limit, self._routine_candidate_limit)
+        lexical_candidates = self._similarity.search(
             query,
-            self._experience_store.all(),
-            top_k=self._experience_top_k,
+            persona_experiences,
+            top_k=candidate_limit,
         )
+        related = lexical_candidates[: self._experience_top_k]
+        semantic_candidates: List[ExperienceRecord] = []
         if self._experience_vector_index and self._experience_vector_index.is_enabled():
-            semantic_related = await self._experience_vector_index.search(
-                query, persona_id=self._persona, top_k=self._experience_top_k
+            semantic_candidates = await self._experience_vector_index.search(
+                query, persona_id=self._persona, top_k=candidate_limit
             )
-            semantic_related = self._gate_semantic_experiences(semantic_related)
-            related = self._merge_related_experiences(semantic_related, related)
+            semantic_candidates = self._gate_semantic_experiences(semantic_candidates, limit=candidate_limit)
+            related = self._merge_related_experiences(semantic_candidates[: self._experience_top_k], related)
+        if self._routine_summary_enabled and self._routine_summary_limit > 0:
+            routine_candidates = self._merge_related_experiences(
+                semantic_candidates,
+                lexical_candidates,
+                limit=candidate_limit,
+            )
+            routine_summaries = self._build_routine_summaries(routine_candidates)
+            if routine_summaries:
+                related = self._merge_related_experiences(
+                    related,
+                    routine_summaries,
+                    limit=6 + self._routine_summary_limit,
+                )
         now_ts = time.time()
         summary_meta_raw = self._memory.summary_meta()
         summary_meta: Dict[str, Any] = dict(summary_meta_raw)
@@ -1817,7 +1844,11 @@ class MessagePipeline:
                 break
         return merged
 
-    def _gate_semantic_experiences(self, experiences: List[ExperienceRecord]) -> List[ExperienceRecord]:
+    def _gate_semantic_experiences(
+        self,
+        experiences: List[ExperienceRecord],
+        limit: int | None = None,
+    ) -> List[ExperienceRecord]:
         if not experiences:
             return experiences
         scored: List[tuple[float, ExperienceRecord]] = []
@@ -1836,15 +1867,161 @@ class MessagePipeline:
         if top_score < self._experience_score_min:
             return []
         gated: List[ExperienceRecord] = []
+        gate_limit = self._experience_top_k if limit is None else max(1, int(limit))
         for score, item in scored:
             if score < self._experience_score_min:
                 continue
             if (top_score - score) > self._experience_score_delta:
                 continue
             gated.append(item)
-            if len(gated) >= self._experience_top_k:
+            if len(gated) >= gate_limit:
                 break
         return gated
+
+    def _experiences_for_persona(self, experiences: List[ExperienceRecord]) -> List[ExperienceRecord]:
+        if not self._persona:
+            return experiences
+        filtered: List[ExperienceRecord] = []
+        for item in experiences:
+            metadata = item.metadata if isinstance(item.metadata, dict) else {}
+            persona_id = str(metadata.get("persona_id", "") or "")
+            if persona_id and persona_id != self._persona:
+                continue
+            filtered.append(item)
+        return filtered
+
+    def _build_routine_summaries(self, candidates: List[ExperienceRecord]) -> List[ExperienceRecord]:
+        if not candidates:
+            return []
+        clusters: List[Dict[str, Any]] = []
+        for item in candidates:
+            tokens = self._routine_tokens(item.text)
+            if len(tokens) < 4:
+                continue
+            best_idx = -1
+            best_score = 0.0
+            for idx, cluster in enumerate(clusters):
+                score = self._token_jaccard(tokens, cluster["anchor_tokens"])
+                if score > best_score:
+                    best_idx = idx
+                    best_score = score
+            if best_idx >= 0 and best_score >= 0.60:
+                cluster = clusters[best_idx]
+                cluster["items"].append(item)
+                overlap = cluster["anchor_tokens"] & tokens
+                if len(overlap) >= 3:
+                    cluster["anchor_tokens"] = overlap
+            else:
+                clusters.append({"anchor_tokens": set(tokens), "items": [item]})
+
+        summaries: List[tuple[int, float, ExperienceRecord]] = []
+        for cluster in clusters:
+            items = cluster.get("items", [])
+            if len(items) < self._routine_summary_min_count:
+                continue
+            latest = max(items, key=self._experience_timestamp)
+            count = len(items)
+            metadata_raw = latest.metadata if isinstance(latest.metadata, dict) else {}
+            last_seen = self._format_last_seen(metadata_raw)
+            phrase = self._routine_phrase(latest.text)
+            prefix = "Often" if count >= 3 else "Repeatedly"
+            text = f"{prefix} {phrase} ({count} similar experiences, last seen {last_seen})."
+            metadata: Dict[str, Any] = {
+                "source": "routine_summary",
+                "routine_count": count,
+                "last_seen": last_seen,
+            }
+            rep_id = str(metadata_raw.get("experience_id", "") or "")
+            if rep_id:
+                metadata["representative_experience_id"] = rep_id
+            summaries.append(
+                (
+                    count,
+                    self._experience_timestamp(latest),
+                    ExperienceRecord(text=text, metadata=metadata),
+                )
+            )
+
+        summaries.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return [row[2] for row in summaries[: self._routine_summary_limit]]
+
+    @staticmethod
+    def _routine_tokens(text: str) -> Set[str]:
+        if not text:
+            return set()
+        cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in text)
+        tokens: List[str] = []
+        seen: Set[str] = set()
+        for token in cleaned.split():
+            if len(token) < 4:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+            if len(tokens) >= 24:
+                break
+        return set(tokens)
+
+    @staticmethod
+    def _token_jaccard(left: Set[str], right: Set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        union = left | right
+        if not union:
+            return 0.0
+        return len(left & right) / len(union)
+
+    @staticmethod
+    def _routine_phrase(text: str) -> str:
+        clean = " ".join(str(text or "").split())
+        if not clean:
+            return "similar events occurred"
+        sentence = clean
+        for punct in (".", "!", "?"):
+            if punct in sentence:
+                sentence = sentence.split(punct, 1)[0].strip()
+                break
+        words = sentence.split()
+        if len(words) > 18:
+            sentence = " ".join(words[:18]).rstrip(",;:")
+        return sentence
+
+    @staticmethod
+    def _experience_timestamp(item: ExperienceRecord) -> float:
+        metadata = item.metadata if isinstance(item.metadata, dict) else {}
+        raw_ts = metadata.get("timestamp")
+        try:
+            ts = float(raw_ts)
+            if ts > 0.0:
+                return ts
+        except (TypeError, ValueError):
+            pass
+        for key in ("timestamp_end", "timestamp_start"):
+            value = str(metadata.get(key, "") or "").strip()
+            if not value:
+                continue
+            try:
+                dt = datetime.fromisoformat(value)
+                return dt.replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                continue
+        return 0.0
+
+    @staticmethod
+    def _format_last_seen(metadata: Dict[str, Any]) -> str:
+        for key in ("timestamp_end", "timestamp_start"):
+            value = str(metadata.get(key, "") or "").strip()
+            if value:
+                return value.split(" ", 1)[0]
+        raw_ts = metadata.get("timestamp")
+        try:
+            ts = float(raw_ts)
+            if ts > 0.0:
+                return datetime.fromtimestamp(ts, timezone.utc).date().isoformat()
+        except (TypeError, ValueError):
+            pass
+        return "unknown"
 
     @staticmethod
     def _normalize_entities(entries: List[Any]) -> List[Any]:

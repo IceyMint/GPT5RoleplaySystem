@@ -52,6 +52,9 @@ class KnowledgeConfig:
     experience_similar_limit: int = 3
     experience_score_min: float = 0.78
     experience_score_delta: float = 0.03
+    routine_summary_enabled: bool = False
+    routine_summary_limit: int = 2
+    routine_summary_min_count: int = 2
 
 
 @dataclass
@@ -302,6 +305,11 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         experience_score_min=float(knowledge_raw.get("experience_score_min", KnowledgeConfig().experience_score_min)),
         experience_score_delta=float(
             knowledge_raw.get("experience_score_delta", KnowledgeConfig().experience_score_delta)
+        ),
+        routine_summary_enabled=bool(knowledge_raw.get("routine_summary_enabled", KnowledgeConfig().routine_summary_enabled)),
+        routine_summary_limit=int(knowledge_raw.get("routine_summary_limit", KnowledgeConfig().routine_summary_limit)),
+        routine_summary_min_count=int(
+            knowledge_raw.get("routine_summary_min_count", KnowledgeConfig().routine_summary_min_count)
         ),
     )
 

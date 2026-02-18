@@ -59,3 +59,22 @@ llm:
     monkeypatch.delenv("NEO4J_GENAI_ONLY", raising=False)
     config = load_config(str(config_path))
     assert config.llm.neo4j_genai_only is True
+
+
+def test_load_config_parses_routine_summary_settings(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+knowledge_storage:
+  routine_summary_enabled: true
+  routine_summary_limit: 3
+  routine_summary_min_count: 4
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("NEO4J_GENAI_ONLY", raising=False)
+    config = load_config(str(config_path))
+    assert config.knowledge.routine_summary_enabled is True
+    assert config.knowledge.routine_summary_limit == 3
+    assert config.knowledge.routine_summary_min_count == 4
