@@ -73,11 +73,14 @@ Vector results are gated by:
 
 - `knowledge_storage.experience_score_min`
 - `knowledge_storage.experience_score_delta`
+- optional near-duplicate collapse via `knowledge_storage.near_duplicate_collapse_enabled`
+- near-duplicate threshold via `knowledge_storage.near_duplicate_similarity`
 
 Only gated results are merged into `related_experiences` in the prompt context.
+
+Optional storage-level cleanup can be enabled via `experience_deduplication` to merge near-identical experience nodes that are also close in time.
 
 ## Why Episodic > Overflow
 
 Overflow boundaries are token-budget artifacts, not semantic boundaries.
 Episodes better match "memorable experiences across multiple messages."
-

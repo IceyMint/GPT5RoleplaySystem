@@ -92,6 +92,8 @@ Experience retrieval knobs:
 - `experience_similar_limit`: top-k retrieved experiences
 - `experience_score_min`: minimum similarity score gate
 - `experience_score_delta`: max allowed drop from the top score
+- `near_duplicate_collapse_enabled`: collapse near-duplicate `related_experiences` into one representative
+- `near_duplicate_similarity`: similarity threshold (0.0-1.0) used for near-duplicate clustering
 - `routine_summary_enabled`: include compact routine-pattern summaries in `related_experiences`
 - `routine_summary_limit`: max routine summary lines added to context
 - `routine_summary_min_count`: minimum matching experiences required before a routine summary is emitted
@@ -148,6 +150,22 @@ Periodic post-processing loop that collapses redundant facts in Neo4j.
 Notes:
 
 - This loop runs only when both Neo4j storage and `OpenRouterLLMClient` are active.
+
+## `experience_deduplication`
+
+Periodic post-processing loop that merges near-identical, near-in-time `Experience` nodes in Neo4j.
+
+- `enabled`: enables/disables the background deduplication loop
+- `dry_run`: when `true`, logs merge plans without deleting/updating nodes
+- `interval_hours`: time between deduplication passes
+- `similarity_threshold`: minimum vector similarity required to consider a merge
+- `max_time_gap_hours`: maximum non-overlapping time gap between experiences to allow merge
+- `neighbor_k`: nearest-neighbor candidates checked per experience node
+
+Notes:
+
+- This loop runs only when Neo4j storage is active.
+- Merges keep one canonical node, widen `timestamp_start`/`timestamp_end`, set `timestamp` to merged end, and delete duplicates.
 
 ## `database`
 

@@ -52,6 +52,8 @@ class KnowledgeConfig:
     experience_similar_limit: int = 3
     experience_score_min: float = 0.78
     experience_score_delta: float = 0.03
+    near_duplicate_collapse_enabled: bool = True
+    near_duplicate_similarity: float = 0.9
     routine_summary_enabled: bool = False
     routine_summary_limit: int = 2
     routine_summary_min_count: int = 2
@@ -73,6 +75,16 @@ class FactsConfig:
 class FactsDeduplicationConfig:
     enabled: bool = True
     interval_hours: float = 4.0
+
+
+@dataclass
+class ExperienceDeduplicationConfig:
+    enabled: bool = False
+    dry_run: bool = True
+    interval_hours: float = 6.0
+    similarity_threshold: float = 0.995
+    max_time_gap_hours: float = 6.0
+    neighbor_k: int = 12
 
 
 @dataclass
@@ -125,6 +137,7 @@ class ServerConfig:
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
     facts_deduplication: FactsDeduplicationConfig = field(default_factory=FactsDeduplicationConfig)
+    experience_deduplication: ExperienceDeduplicationConfig = field(default_factory=ExperienceDeduplicationConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)
     max_environment_participants: int = 10
     persona_profiles: Dict[str, str] = field(default_factory=dict)
@@ -210,6 +223,9 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
     autonomy_raw = raw.get("autonomy", {}) if isinstance(raw.get("autonomy"), dict) else {}
     db_raw = raw.get("database", {}) if isinstance(raw.get("database"), dict) else {}
     facts_deduplication_raw = raw.get("facts_deduplication", {}) if isinstance(raw.get("facts_deduplication"), dict) else {}
+    experience_deduplication_raw = (
+        raw.get("experience_deduplication", {}) if isinstance(raw.get("experience_deduplication"), dict) else {}
+    )
     wandb_raw = raw.get("wandb", {}) if isinstance(raw.get("wandb"), dict) else {}
     persona_profiles_raw = raw.get("persona_profiles", {}) if isinstance(raw.get("persona_profiles"), dict) else {}
     provider_raw = llm_raw.get("provider", {}) if isinstance(llm_raw.get("provider"), dict) else {}
@@ -306,7 +322,24 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         experience_score_delta=float(
             knowledge_raw.get("experience_score_delta", KnowledgeConfig().experience_score_delta)
         ),
-        routine_summary_enabled=bool(knowledge_raw.get("routine_summary_enabled", KnowledgeConfig().routine_summary_enabled)),
+        near_duplicate_collapse_enabled=bool(
+            knowledge_raw.get(
+                "near_duplicate_collapse_enabled",
+                KnowledgeConfig().near_duplicate_collapse_enabled,
+            )
+        ),
+        near_duplicate_similarity=float(
+            knowledge_raw.get(
+                "near_duplicate_similarity",
+                KnowledgeConfig().near_duplicate_similarity,
+            )
+        ),
+        routine_summary_enabled=bool(
+            knowledge_raw.get(
+                "routine_summary_enabled",
+                KnowledgeConfig().routine_summary_enabled,
+            )
+        ),
         routine_summary_limit=int(knowledge_raw.get("routine_summary_limit", KnowledgeConfig().routine_summary_limit)),
         routine_summary_min_count=int(
             knowledge_raw.get("routine_summary_min_count", KnowledgeConfig().routine_summary_min_count)
@@ -376,6 +409,40 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         interval_hours=float(facts_deduplication_raw.get("interval_hours", FactsDeduplicationConfig().interval_hours)),
     )
 
+    experience_deduplication_config = ExperienceDeduplicationConfig(
+        enabled=bool(experience_deduplication_raw.get("enabled", ExperienceDeduplicationConfig().enabled)),
+        dry_run=bool(experience_deduplication_raw.get("dry_run", ExperienceDeduplicationConfig().dry_run)),
+        interval_hours=max(
+            0.0,
+            float(experience_deduplication_raw.get("interval_hours", ExperienceDeduplicationConfig().interval_hours)),
+        ),
+        similarity_threshold=min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    experience_deduplication_raw.get(
+                        "similarity_threshold",
+                        ExperienceDeduplicationConfig().similarity_threshold,
+                    )
+                ),
+            ),
+        ),
+        max_time_gap_hours=max(
+            0.0,
+            float(
+                experience_deduplication_raw.get(
+                    "max_time_gap_hours",
+                    ExperienceDeduplicationConfig().max_time_gap_hours,
+                )
+            ),
+        ),
+        neighbor_k=max(
+            2,
+            int(experience_deduplication_raw.get("neighbor_k", ExperienceDeduplicationConfig().neighbor_k)),
+        ),
+    )
+
     wandb_config = WandbConfig(
         enabled=_env_bool("GPT5_ROLEPLAY_WANDB_ENABLED", bool(wandb_raw.get("enabled", False))),
         project=wandb_raw.get("project", WandbConfig().project),
@@ -410,6 +477,7 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         autonomy=autonomy_config,
         neo4j=neo4j_config,
         facts_deduplication=facts_deduplication_config,
+        experience_deduplication=experience_deduplication_config,
         wandb=wandb_config,
         max_environment_participants=int(os.getenv("GPT5_ROLEPLAY_MAX_PARTICIPANTS", 10)),
         persona_profiles=persona_profiles,

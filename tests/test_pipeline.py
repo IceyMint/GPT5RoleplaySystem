@@ -1520,6 +1520,62 @@ def test_pipeline_adds_routine_summaries_non_destructively():
     assert any("ramen" in text.lower() for text in raw_texts)
 
 
+def test_pipeline_collapses_near_duplicate_related_experiences():
+    llm = ContextCaptureLLM()
+    store = ExperienceStore()
+    store.add(
+        "We had ramen together on a rainy evening near the station.",
+        {
+            "experience_id": "dup-1",
+            "timestamp_end": "2026-02-14 20:11:00",
+            "timestamp": 1707941460.0,
+        },
+        persona_id="TestPersona",
+    )
+    store.add(
+        "We had ramen together on a rainy evening near the station!",
+        {
+            "experience_id": "dup-2",
+            "timestamp_end": "2026-02-16 20:25:00",
+            "timestamp": 1708115100.0,
+        },
+        persona_id="TestPersona",
+    )
+
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=store,
+        tracer=NoOpTracer(),
+        experience_top_k=4,
+        near_duplicate_collapse_enabled=True,
+        near_duplicate_similarity=0.9,
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Tell me what you remember about ramen near the station.",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 10,
+            }
+        )
+    )
+
+    assert llm.contexts
+    related = llm.contexts[-1].related_experiences
+    assert len(related) == 1
+    metadata = related[0].get("metadata", {})
+    assert metadata.get("near_duplicate_count") == 2
+    assert metadata.get("near_duplicate_first_seen") == "2024-02-14"
+    assert metadata.get("near_duplicate_last_seen") == "2024-02-16"
+
+
 def test_pipeline_logs_llm_prompt_and_response():
     tracer = CaptureTracer()
     pipeline = MessagePipeline(

@@ -89,6 +89,7 @@ Key config blocks:
   - `reasoning`: optional reasoning effort forwarded to OpenRouter requests
 - `knowledge_storage`
   - `experience_similar_limit`, `experience_score_min`, `experience_score_delta`
+  - near-duplicate collapse: `near_duplicate_collapse_enabled`, `near_duplicate_similarity`
   - optional routine summaries: `routine_summary_enabled`, `routine_summary_limit`, `routine_summary_min_count`
 - `facts`
   - periodic or per-message extraction controls, pending queue thresholds
@@ -107,6 +108,10 @@ Key config blocks:
 - `facts_deduplication`
   - `enabled`: periodic background fact deduplication loop
   - `interval_hours`: cadence for the deduplication pass
+- `experience_deduplication`
+  - `enabled`: periodic experience-node dedupe loop
+  - `dry_run`: detect/report merge plans without mutating data
+  - `similarity_threshold`, `max_time_gap_hours`, `neighbor_k`: strict merge gates
 - `persona_profiles`
   - optional persona-specific prompt profile text keyed by persona name
 - `max_environment_participants`

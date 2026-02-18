@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 import logging
 import time
 import unicodedata
@@ -61,6 +62,8 @@ class MessagePipeline:
         experience_top_k: int = 3,
         experience_score_min: float = 0.78,
         experience_score_delta: float = 0.03,
+        near_duplicate_collapse_enabled: bool = True,
+        near_duplicate_similarity: float = 0.9,
         routine_summary_enabled: bool = False,
         routine_summary_limit: int = 2,
         routine_summary_min_count: int = 2,
@@ -85,6 +88,8 @@ class MessagePipeline:
         self._experience_top_k = experience_top_k
         self._experience_score_min = experience_score_min
         self._experience_score_delta = experience_score_delta
+        self._near_duplicate_collapse_enabled = bool(near_duplicate_collapse_enabled)
+        self._near_duplicate_similarity = min(1.0, max(0.0, float(near_duplicate_similarity)))
         self._routine_summary_enabled = bool(routine_summary_enabled)
         self._routine_summary_limit = max(0, int(routine_summary_limit))
         self._routine_summary_min_count = max(2, int(routine_summary_min_count))
@@ -623,6 +628,7 @@ class MessagePipeline:
                     routine_summaries,
                     limit=6 + self._routine_summary_limit,
                 )
+        related = self._collapse_near_duplicate_experiences(related)
         now_ts = time.time()
         summary_meta_raw = self._memory.summary_meta()
         summary_meta: Dict[str, Any] = dict(summary_meta_raw)
@@ -1843,6 +1849,100 @@ class MessagePipeline:
             if len(merged) >= limit:
                 break
         return merged
+
+    def _collapse_near_duplicate_experiences(
+        self,
+        experiences: List[ExperienceRecord],
+    ) -> List[ExperienceRecord]:
+        if not self._near_duplicate_collapse_enabled:
+            return experiences
+        if len(experiences) < 2:
+            return experiences
+        threshold = self._near_duplicate_similarity
+        if threshold <= 0.0:
+            return experiences
+
+        clusters: List[Dict[str, Any]] = []
+        for item in experiences:
+            normalized_text = self._normalize_experience_text(item.text)
+            best_idx = -1
+            best_score = 0.0
+            for idx, cluster in enumerate(clusters):
+                score = self._near_duplicate_similarity_score(
+                    normalized_text,
+                    str(cluster.get("anchor_text", "")),
+                )
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+            if best_idx >= 0 and best_score >= threshold:
+                clusters[best_idx]["items"].append(item)
+                continue
+            clusters.append({"anchor_text": normalized_text, "items": [item]})
+
+        if all(len(cluster.get("items", [])) < 2 for cluster in clusters):
+            return experiences
+
+        collapsed: List[ExperienceRecord] = []
+        for cluster in clusters:
+            items = cluster.get("items", [])
+            if not items:
+                continue
+            representative = items[0]
+            if len(items) == 1:
+                collapsed.append(representative)
+                continue
+            collapsed.append(self._with_near_duplicate_metadata(representative, items))
+        return collapsed
+
+    @staticmethod
+    def _normalize_experience_text(text: str) -> str:
+        clean = " ".join(str(text or "").split())
+        return clean.casefold()
+
+    @staticmethod
+    def _near_duplicate_similarity_score(left: str, right: str) -> float:
+        if not left or not right:
+            return 0.0
+        if left == right:
+            return 1.0
+        sequence = SequenceMatcher(a=left, b=right).ratio()
+        left_tokens = set(left.split())
+        right_tokens = set(right.split())
+        token_score = MessagePipeline._token_jaccard(left_tokens, right_tokens)
+        left_trigrams = MessagePipeline._char_trigrams(left)
+        right_trigrams = MessagePipeline._char_trigrams(right)
+        trigram_score = MessagePipeline._token_jaccard(left_trigrams, right_trigrams)
+        return max(sequence, token_score, trigram_score)
+
+    @staticmethod
+    def _char_trigrams(text: str) -> Set[str]:
+        if len(text) < 3:
+            return {text} if text else set()
+        return {text[idx : idx + 3] for idx in range(len(text) - 2)}
+
+    def _with_near_duplicate_metadata(
+        self,
+        representative: ExperienceRecord,
+        items: List[ExperienceRecord],
+    ) -> ExperienceRecord:
+        metadata = representative.metadata if isinstance(representative.metadata, dict) else {}
+        merged_metadata: Dict[str, Any] = dict(metadata)
+        merged_metadata["near_duplicate_count"] = len(items)
+
+        timestamps = [self._experience_timestamp(item) for item in items]
+        valid_timestamps = [ts for ts in timestamps if ts > 0.0]
+        if valid_timestamps:
+            first_seen_ts = min(valid_timestamps)
+            last_seen_ts = max(valid_timestamps)
+            merged_metadata["near_duplicate_first_seen"] = self._iso_date(first_seen_ts)
+            merged_metadata["near_duplicate_last_seen"] = self._iso_date(last_seen_ts)
+
+        return ExperienceRecord(text=representative.text, metadata=merged_metadata)
+
+    @staticmethod
+    def _iso_date(timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp, timezone.utc).date().isoformat()
 
     def _gate_semantic_experiences(
         self,
