@@ -83,6 +83,7 @@ Key config blocks:
 - `llm`
   - `model` selection + optional `bundle_model`/`summary_model`/`facts_model`/`address_model`
   - optional OpenRouter provider routing via `provider.order` and `provider.allow_fallbacks`
+  - optional facts-only OpenRouter provider routing via `facts_provider.order` and `facts_provider.allow_fallbacks`
   - `embedding_model`, `embedding_dimensions`, optional `embedding_base_url`
   - `neo4j_genai_provider` for Neo4j `genai.vector.encode` (default `OpenAI`)
   - `neo4j_genai_only` to disable fallback embeddings and require Neo4j GenAI

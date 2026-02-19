@@ -165,6 +165,62 @@ def test_system_prompt_includes_persona_instructions():
     assert "You are Isabella, a friendly cat." in prompt
 
 
+def test_format_context_omits_persona_identity_fields():
+    env = EnvironmentSnapshot(location="Test Zone")
+    context = ConversationContext(
+        persona="isabella.elara",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[Participant(user_id="user-2", name="Evie")],
+        people_facts={},
+        recent_messages=[],
+        summary="",
+        related_experiences=[],
+        summary_meta={},
+        agent_state={},
+        persona_instructions="Be playful, curious, and brief.",
+    )
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+
+    payload = json.loads(client._format_context(chat, context, None, None))
+
+    assert "persona" not in payload
+    assert "persona_instructions" not in payload
+    assert payload["user_id"] == "ai-uuid"
+
+
+def test_format_autonomous_context_omits_persona_identity_fields():
+    env = EnvironmentSnapshot(location="Test Zone")
+    context = ConversationContext(
+        persona="isabella.elara",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[Participant(user_id="user-2", name="Evie")],
+        people_facts={},
+        recent_messages=[],
+        summary="",
+        related_experiences=[],
+        summary_meta={},
+        agent_state={},
+        persona_instructions="Be playful, curious, and brief.",
+    )
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    activity = {
+        "seconds_since_activity": 5.0,
+        "last_inbound_ts": 1.0,
+        "last_response_ts": 2.0,
+        "mood": "calm",
+        "status": "idle",
+    }
+
+    payload = json.loads(client._format_autonomous_context(context, activity))
+
+    assert "persona" not in payload
+    assert "persona_instructions" not in payload
+    assert payload["user_id"] == "ai-uuid"
+
+
 def test_format_address_check_handles_participant_without_username_field():
     client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
@@ -314,7 +370,56 @@ def test_request_bundle_includes_provider_routing_in_extra_body():
     assert client.captured["extra_body"]["reasoning_effort"] == "low"
 
 
-def test_request_facts_uses_facts_model_with_provider_routing():
+def test_request_facts_uses_facts_model_with_facts_provider_override():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._facts_model = "z-ai/glm-5"
+            self._max_tokens = 256
+            self._reasoning = "low"
+            self._provider_order = ["default-provider"]
+            self._provider_allow_fallbacks = True
+            self._facts_provider_order = ["siliconflow"]
+            self._facts_provider_allow_fallbacks = False
+            self.captured = {}
+
+        def _facts_system_prompt(self):
+            return "facts-sys"
+
+        def _format_facts_context_from_messages(
+            self,
+            evidence_messages,
+            participants,
+            persona,
+            user_id,
+            summary,
+            summary_meta,
+            related_experiences,
+            people_facts,
+        ):
+            return "facts-ctx"
+
+        def _request_structured(self, model_class, kwargs):
+            self.captured = kwargs
+            return None
+
+    client = CaptureClient()
+    msg = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client._request_facts_from_messages(
+        evidence_messages=[msg],
+        participants=[],
+        persona="persona",
+        user_id="ai-uuid",
+    )
+
+    assert client.captured["model"] == "z-ai/glm-5"
+    assert client.captured["extra_body"]["provider"] == {
+        "order": ["siliconflow"],
+        "allow_fallbacks": False,
+    }
+    assert client.captured["extra_body"]["include_reasoning"] is True
+
+
+def test_request_facts_provider_routing_falls_back_to_global_provider():
     class CaptureClient(OpenRouterLLMClient):
         def __init__(self) -> None:
             self._facts_model = "z-ai/glm-5"
@@ -322,6 +427,8 @@ def test_request_facts_uses_facts_model_with_provider_routing():
             self._reasoning = "low"
             self._provider_order = ["siliconflow"]
             self._provider_allow_fallbacks = False
+            self._facts_provider_order = None
+            self._facts_provider_allow_fallbacks = None
             self.captured = {}
 
         def _facts_system_prompt(self):
@@ -653,6 +760,70 @@ def test_request_structured_recovers_from_unparsed_markdown_content_parts():
     assert parsed_bundle.actions
     assert parsed_bundle.actions[0].command_type.value == "CHAT"
     assert parsed_bundle.actions[0].content == "Mama...?"
+
+
+def test_request_structured_caches_no_endpoint_parse_failures():
+    if StructuredBundle is None:
+        return
+
+    class _Message:
+        def __init__(self) -> None:
+            self.content = '{"text":"hi","actions":[]}'
+
+    class _Choice:
+        def __init__(self) -> None:
+            self.message = _Message()
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice()]
+
+    class _NoEndpointError(Exception):
+        def __init__(self) -> None:
+            super().__init__("Error code: 404 - {'error': {'message': 'No endpoints found for z-ai/glm-5.'}}")
+            self.status_code = 404
+            self.body = {"error": {"message": "No endpoints found for z-ai/glm-5."}}
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.parse_calls = 0
+            self.create_calls = 0
+
+        def parse(self, **_kwargs):
+            self.parse_calls += 1
+            raise _NoEndpointError()
+
+        def create(self, **_kwargs):
+            self.create_calls += 1
+            return _Completion()
+
+    class _Chat:
+        def __init__(self, completions) -> None:
+            self.completions = completions
+
+    class _Client:
+        def __init__(self, completions) -> None:
+            self.chat = _Chat(completions)
+
+    completions = _Completions()
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client(completions)
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    kwargs = {
+        "model": "z-ai/glm-5",
+        "messages": [],
+        "response_format": StructuredBundle,
+        "extra_body": {"provider": {"order": ["siliconflow"], "allow_fallbacks": False}},
+    }
+
+    first = client._request_structured(StructuredBundle, kwargs)
+    second = client._request_structured(StructuredBundle, kwargs)
+
+    assert first is not None
+    assert second is not None
+    assert completions.parse_calls == 1
+    assert completions.create_calls == 2
 
 
 class _Usage:

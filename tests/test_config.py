@@ -107,3 +107,32 @@ experience_deduplication:
     assert config.experience_deduplication.similarity_threshold == 0.997
     assert config.experience_deduplication.max_time_gap_hours == 12.0
     assert config.experience_deduplication.neighbor_k == 16
+
+
+def test_load_config_parses_facts_provider_override(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+llm:
+  thinking_model: minimax/minimax-m2.5
+  facts_model: z-ai/glm-5
+  facts_provider:
+    order:
+      - siliconflow
+    allow_fallbacks: false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("GPT5_ROLEPLAY_LLM_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("GPT5_ROLEPLAY_LLM_PROVIDER_ALLOW_FALLBACKS", raising=False)
+    monkeypatch.delenv("GPT5_ROLEPLAY_LLM_FACTS_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("GPT5_ROLEPLAY_LLM_FACTS_PROVIDER_ALLOW_FALLBACKS", raising=False)
+
+    config = load_config(str(config_path))
+    assert config.llm.model == "minimax/minimax-m2.5"
+    assert config.llm.facts_model == "z-ai/glm-5"
+    assert config.llm.provider_order == []
+    assert config.llm.provider_allow_fallbacks is None
+    assert config.llm.facts_provider_order == ["siliconflow"]
+    assert config.llm.facts_provider_allow_fallbacks is False

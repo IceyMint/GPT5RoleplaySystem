@@ -285,13 +285,19 @@ def _build_llm_client(config: ServerConfig):
     if config.llm.api_key:
         try:
             logger.info(
-                "LLM: OpenRouter enabled (model=%s, bundle_model=%s, summary_model=%s, facts_model=%s, address_model=%s, provider_order=%s, base_url=%s)",
+                "LLM: OpenRouter enabled (model=%s, bundle_model=%s, summary_model=%s, facts_model=%s, "
+                "address_model=%s, provider_order=%s, facts_provider_order=%s, base_url=%s)",
                 config.llm.model,
                 config.llm.bundle_model or config.llm.model,
                 config.llm.summary_model or config.llm.model,
                 config.llm.facts_model or config.llm.model,
                 config.llm.address_model or config.llm.model,
                 ",".join(config.llm.provider_order) if config.llm.provider_order else "default",
+                (
+                    ",".join(config.llm.facts_provider_order)
+                    if config.llm.facts_provider_order
+                    else ("none" if config.llm.facts_provider_order == [] else "inherit")
+                ),
                 config.llm.base_url,
             )
             return OpenRouterLLMClient(
@@ -310,6 +316,8 @@ def _build_llm_client(config: ServerConfig):
                 reasoning=config.llm.reasoning,
                 provider_order=config.llm.provider_order,
                 provider_allow_fallbacks=config.llm.provider_allow_fallbacks,
+                facts_provider_order=config.llm.facts_provider_order,
+                facts_provider_allow_fallbacks=config.llm.facts_provider_allow_fallbacks,
             )
         except RuntimeError as exc:
             logger.warning("LLM: OpenRouter client unavailable (%s); using rule-based fallback", exc)

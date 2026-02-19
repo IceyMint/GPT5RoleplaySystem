@@ -554,6 +554,8 @@ class OpenRouterLLMClient(LLMClient):
         reasoning: str = "",
         provider_order: List[str] | None = None,
         provider_allow_fallbacks: bool | None = None,
+        facts_provider_order: List[str] | None = None,
+        facts_provider_allow_fallbacks: bool | None = None,
     ) -> None:
         if OpenAI is None:
             raise RuntimeError("openai package is not installed")
@@ -575,6 +577,17 @@ class OpenRouterLLMClient(LLMClient):
         self._provider_allow_fallbacks = (
             bool(provider_allow_fallbacks) if provider_allow_fallbacks is not None else None
         )
+        self._facts_provider_order = (
+            [str(item).strip() for item in facts_provider_order if str(item).strip()]
+            if facts_provider_order is not None
+            else None
+        )
+        self._facts_provider_allow_fallbacks = (
+            bool(facts_provider_allow_fallbacks) if facts_provider_allow_fallbacks is not None else None
+        )
+        # Cache model/provider combinations where structured parse is known to fail with
+        # "No endpoints found" so we can skip the failing parse call on future requests.
+        self._structured_parse_fallback_keys: set[str] = set()
         self._fallback = fallback or RuleBasedLLMClient()
         actual_base_url = self._base_url if self._base_url else None
         self._client = OpenAI(api_key=self._api_key, base_url=actual_base_url, timeout=self._timeout)
@@ -599,9 +612,16 @@ class OpenRouterLLMClient(LLMClient):
             sample.cache_discount,
         )
 
-    def _provider_payload(self) -> Dict[str, Any] | None:
+    def _provider_payload(self, *, for_facts: bool = False) -> Dict[str, Any] | None:
         order = [str(item).strip() for item in getattr(self, "_provider_order", []) if str(item).strip()]
         allow_fallbacks = getattr(self, "_provider_allow_fallbacks", None)
+        if for_facts:
+            facts_order = getattr(self, "_facts_provider_order", None)
+            facts_allow_fallbacks = getattr(self, "_facts_provider_allow_fallbacks", None)
+            if facts_order is not None:
+                order = [str(item).strip() for item in facts_order if str(item).strip()]
+            if facts_allow_fallbacks is not None:
+                allow_fallbacks = bool(facts_allow_fallbacks)
         if not order and allow_fallbacks is None:
             return None
         payload: Dict[str, Any] = {}
@@ -611,13 +631,20 @@ class OpenRouterLLMClient(LLMClient):
             payload["allow_fallbacks"] = bool(allow_fallbacks)
         return payload
 
-    def _apply_extra_body(self, kwargs: Dict[str, Any], *, include_reasoning: bool, include_provider: bool) -> None:
+    def _apply_extra_body(
+        self,
+        kwargs: Dict[str, Any],
+        *,
+        include_reasoning: bool,
+        include_provider: bool,
+        provider_for_facts: bool = False,
+    ) -> None:
         extra_body: Dict[str, Any] = dict(kwargs.get("extra_body") or {})
         if include_reasoning and getattr(self, "_reasoning", ""):
             extra_body["include_reasoning"] = True
             extra_body["reasoning_effort"] = str(getattr(self, "_reasoning"))
         if include_provider:
-            provider_payload = self._provider_payload()
+            provider_payload = self._provider_payload(for_facts=provider_for_facts)
             if provider_payload:
                 extra_body["provider"] = provider_payload
         if extra_body:
@@ -731,8 +758,8 @@ class OpenRouterLLMClient(LLMClient):
     def _system_prompt(self) -> str:
         return (
             "# IDENTITY & VOICE\n"
-            "You are the roleplay persona described in the input. Your primary goal is to provide immersive, "
-            "in-character responses. Treat the 'persona' and 'persona_instructions' fields as your absolute identity.\n\n"
+            "You are the roleplay persona declared below in this system instruction. Your primary goal is to provide immersive, "
+            "in-character responses. Treat the provided persona name and persona instructions as your absolute identity.\n\n"
             "# BEHAVIORAL GUIDELINES\n"
             "- Respond to the conversation context and environment naturally.\n"
             "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
@@ -824,8 +851,8 @@ class OpenRouterLLMClient(LLMClient):
     def _autonomous_system_prompt(self) -> str:
         return (
             "# IDENTITY & VOICE\n"
-            "You are the roleplay persona described in the input, deciding whether to act autonomously. "
-            "Treat the 'persona' field as your identity and voice. You are this persona.\n\n"
+            "You are the roleplay persona declared below in this system instruction, deciding whether to act autonomously. "
+            "Treat the provided persona name and persona instructions as your identity and voice. You are this persona.\n\n"
             "# BEHAVIORAL GUIDELINES\n"
             "- Only act when it makes sense given recent activity, environment, and relationships.\n"
             "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
@@ -865,8 +892,74 @@ class OpenRouterLLMClient(LLMClient):
             lines.append(instructions)
         return "\n".join(line for line in lines if line is not None).strip()
 
+    def _structured_parse_cache(self) -> set[str]:
+        cache = getattr(self, "_structured_parse_fallback_keys", None)
+        if cache is None:
+            cache = set()
+            self._structured_parse_fallback_keys = cache
+        return cache
+
+    @staticmethod
+    def _structured_parse_key(kwargs: Dict[str, Any]) -> str:
+        model = str(kwargs.get("model", "") or "").strip()
+        provider_payload: Dict[str, Any] = {}
+        extra_body = kwargs.get("extra_body")
+        if isinstance(extra_body, dict):
+            provider_raw = extra_body.get("provider")
+            if isinstance(provider_raw, dict):
+                provider_payload = {
+                    "order": [str(item).strip() for item in provider_raw.get("order", []) if str(item).strip()],
+                    "allow_fallbacks": provider_raw.get("allow_fallbacks"),
+                }
+        payload = {"model": model, "provider": provider_payload}
+        return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _is_no_endpoint_not_found(exc: Exception) -> bool:
+        status_code = getattr(exc, "status_code", None)
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error = body.get("error")
+            if isinstance(error, dict):
+                message = str(error.get("message", "") or "").casefold()
+                if "no endpoints found" in message:
+                    return True
+        text = str(exc).casefold()
+        if "no endpoints found" in text and "404" in text:
+            return True
+        return status_code == 404 and "no endpoints found" in text
+
+    def _request_structured_raw_create(self, kwargs: Dict[str, Any], *, request_type: str) -> str | None:
+        try:
+            debug_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+            debug_completion = self._client.chat.completions.create(**debug_kwargs)
+            self._record_cache_usage(request_type, debug_completion)
+            if debug_completion.choices:
+                return _message_content_text(debug_completion.choices[0].message)
+        except Exception as debug_exc:
+            logger.error("Failed to fetch raw text for cleanup: %s", debug_exc)
+        return None
+
     def _request_structured(self, model_class: Any, kwargs: Dict[str, Any]) -> Optional[Any]:
         """Execute a structured parse request with fallback cleanup for malformed JSON."""
+        parse_cache = self._structured_parse_cache()
+        parse_key = self._structured_parse_key(kwargs)
+        if parse_key in parse_cache:
+            raw_text = self._request_structured_raw_create(
+                kwargs,
+                request_type="structured.cached_create",
+            )
+            if raw_text:
+                try:
+                    cleaned = _clean_json(raw_text)
+                    return model_class.model_validate_json(cleaned)
+                except Exception as final_exc:
+                    logger.warning(
+                        "Robust parse failed after cached create fallback: %s. Raw:\n%s",
+                        final_exc,
+                        raw_text,
+                    )
+            return None
         try:
             completion = self._client.chat.completions.parse(**kwargs)
             self._record_cache_usage("structured.parse", completion)
@@ -891,6 +984,8 @@ class OpenRouterLLMClient(LLMClient):
                     )
             return None
         except Exception as exc:
+            if self._is_no_endpoint_not_found(exc):
+                parse_cache.add(parse_key)
             raw_text = None
             # Check for truncation or content filter in API error
             completion = getattr(exc, "completion", None)
@@ -902,14 +997,10 @@ class OpenRouterLLMClient(LLMClient):
             if not raw_text:
                 # If parse() failed due to ValidationError, it won't have the completion object.
                 # We fetch the raw text by performing a standard create() call without parsing.
-                try:
-                    debug_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
-                    debug_completion = self._client.chat.completions.create(**debug_kwargs)
-                    self._record_cache_usage("structured.debug_create", debug_completion)
-                    if debug_completion.choices:
-                        raw_text = _message_content_text(debug_completion.choices[0].message)
-                except Exception as debug_exc:
-                    logger.error("Failed to fetch raw text for cleanup: %s", debug_exc)
+                raw_text = self._request_structured_raw_create(
+                    kwargs,
+                    request_type="structured.debug_create",
+                )
 
             if raw_text:
                 try:
@@ -1030,7 +1121,7 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": max(self._max_tokens, 500),
             "temperature": 0.0,
         }
-        self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
+        self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True, provider_for_facts=True)
         return self._request_structured(StructuredFactsOnly, kwargs)
 
     def extract_facts_from_evidence_sync(
@@ -1256,9 +1347,7 @@ class OpenRouterLLMClient(LLMClient):
         participants_payload = self._stable_participants_payload(context.participants)
         now = time.time()
         payload = {
-            "persona": context.persona,
             "user_id": context.user_id,
-            "persona_instructions": context.persona_instructions,
             "participants": participants_payload,
             "environment": {
                 "location": context.environment.location,
@@ -1318,9 +1407,7 @@ class OpenRouterLLMClient(LLMClient):
         now = time.time()
         payload = {
             "mode": "autonomous",
-            "persona": context.persona,
             "user_id": context.user_id,
-            "persona_instructions": context.persona_instructions,
             "participants": participants_payload,
             "environment": {
                 "location": context.environment.location,

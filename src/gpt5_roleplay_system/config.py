@@ -30,6 +30,8 @@ class LLMConfig:
     reasoning: str = ""
     provider_order: List[str] = field(default_factory=list)
     provider_allow_fallbacks: Optional[bool] = None
+    facts_provider_order: Optional[List[str]] = None
+    facts_provider_allow_fallbacks: Optional[bool] = None
 
 
 @dataclass
@@ -229,6 +231,7 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
     wandb_raw = raw.get("wandb", {}) if isinstance(raw.get("wandb"), dict) else {}
     persona_profiles_raw = raw.get("persona_profiles", {}) if isinstance(raw.get("persona_profiles"), dict) else {}
     provider_raw = llm_raw.get("provider", {}) if isinstance(llm_raw.get("provider"), dict) else {}
+    facts_provider_raw = llm_raw.get("facts_provider", {}) if isinstance(llm_raw.get("facts_provider"), dict) else {}
 
     provider_order: List[str] = []
     provider_order_env = os.getenv("GPT5_ROLEPLAY_LLM_PROVIDER_ORDER", "").strip()
@@ -247,6 +250,24 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
             provider_raw.get("allow_fallbacks"),
         )
     )
+
+    facts_provider_order: Optional[List[str]] = None
+    facts_provider_order_env = os.getenv("GPT5_ROLEPLAY_LLM_FACTS_PROVIDER_ORDER", "").strip()
+    if facts_provider_order_env:
+        facts_provider_order = [item.strip() for item in facts_provider_order_env.split(",") if item.strip()]
+    else:
+        facts_order_raw = facts_provider_raw.get("order", None)
+        if isinstance(facts_order_raw, str):
+            facts_provider_order = [item.strip() for item in facts_order_raw.split(",") if item.strip()]
+        elif isinstance(facts_order_raw, list):
+            facts_provider_order = [str(item).strip() for item in facts_order_raw if str(item).strip()]
+
+    facts_provider_allow_fallbacks: Optional[bool] = None
+    facts_provider_allow_fallbacks_env = os.getenv("GPT5_ROLEPLAY_LLM_FACTS_PROVIDER_ALLOW_FALLBACKS", "").strip()
+    if facts_provider_allow_fallbacks_env:
+        facts_provider_allow_fallbacks = _parse_optional_bool(facts_provider_allow_fallbacks_env)
+    elif "allow_fallbacks" in facts_provider_raw:
+        facts_provider_allow_fallbacks = _parse_optional_bool(facts_provider_raw.get("allow_fallbacks"))
 
     llm_config = LLMConfig(
         base_url=os.getenv("GPT5_ROLEPLAY_LLM_BASE_URL", llm_raw.get("base_url", LLMConfig().base_url)),
@@ -296,6 +317,8 @@ def load_config(path: Optional[str] = None) -> ServerConfig:
         reasoning=os.getenv("GPT5_ROLEPLAY_LLM_REASONING", llm_raw.get("reasoning", "")),
         provider_order=provider_order,
         provider_allow_fallbacks=provider_allow_fallbacks,
+        facts_provider_order=facts_provider_order,
+        facts_provider_allow_fallbacks=facts_provider_allow_fallbacks,
     )
 
     summary_strategy = os.getenv(

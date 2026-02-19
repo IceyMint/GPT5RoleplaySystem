@@ -52,6 +52,8 @@ Primary LLM settings:
 - `address_model`: cheap/fast model for addressed-to-me classification
 - `provider.order`: optional OpenRouter provider priority list for roleplay/autonomy model calls (example: `["siliconflow"]`)
 - `provider.allow_fallbacks`: optional OpenRouter provider fallback flag (`false` keeps routing pinned to `provider.order`)
+- `facts_provider.order`: optional OpenRouter provider priority list used only for facts extraction calls
+- `facts_provider.allow_fallbacks`: optional OpenRouter provider fallback flag used only for facts extraction calls
 - `embedding_model`: embedding model id (for similarity search)
 - `neo4j_genai_api_key`: optional explicit key for Neo4j `genai.vector.encode` (defaults to `openai_api_key` / `OPENAI_API_KEY`)
 - `neo4j_genai_provider`: provider passed to Neo4j GenAI (default: `OpenAI`)
@@ -80,6 +82,8 @@ Environment overrides:
 - `GPT5_ROLEPLAY_LLM_REASONING`
 - `GPT5_ROLEPLAY_LLM_PROVIDER_ORDER` (comma-separated, e.g. `siliconflow`)
 - `GPT5_ROLEPLAY_LLM_PROVIDER_ALLOW_FALLBACKS`
+- `GPT5_ROLEPLAY_LLM_FACTS_PROVIDER_ORDER` (comma-separated, e.g. `siliconflow`)
+- `GPT5_ROLEPLAY_LLM_FACTS_PROVIDER_ALLOW_FALLBACKS`
 - `NEO4J_GENAI_API_KEY`
 - `NEO4J_GENAI_PROVIDER`
 - `NEO4J_GENAI_ONLY`
