@@ -549,6 +549,72 @@ def test_request_text_with_model_includes_reasoning_extra_body():
     }
 
 
+def test_request_text_with_model_records_reasoning_trace():
+    class _Usage:
+        def __init__(self) -> None:
+            self.prompt_tokens = 40
+            self.completion_tokens = 12
+            self.total_tokens = 52
+            self.completion_tokens_details = {"reasoning_tokens": 8}
+
+    class _Message:
+        def __init__(self, content: str) -> None:
+            self.content = content
+            self.reasoning = "I should answer true because the check is direct."
+            self.reasoning_details = [{"type": "reasoning.text", "text": "Direct address detected."}]
+
+    class _Choice:
+        def __init__(self, content: str) -> None:
+            self.message = _Message(content)
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice("true")]
+            self.usage = _Usage()
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.last_kwargs = {}
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return _Completion()
+
+    class _Chat:
+        def __init__(self, completions) -> None:
+            self.completions = completions
+
+    class _Client:
+        def __init__(self, completions) -> None:
+            self.chat = _Chat(completions)
+
+    completions = _Completions()
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client(completions)
+    client._reasoning = "low"
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+    client._reasoning_traces = {}
+
+    response = client._request_text_with_model(
+        model="x-ai/grok-4.1-fast",
+        system_prompt="sys",
+        user_prompt="user",
+        max_tokens=5,
+        temperature=0.0,
+    )
+    trace = client.consume_reasoning_trace("text_with_model")
+
+    assert response == "true"
+    assert trace is not None
+    assert trace["model"] == "x-ai/grok-4.1-fast"
+    assert trace["reasoning_tokens"] == 8
+    assert trace["prompt_tokens"] == 40
+    assert trace["completion_tokens"] == 12
+    assert trace["total_tokens"] == 52
+    assert trace["has_reasoning"] is True
+    assert "answer true" in trace["reasoning_text"]
+
+
 def test_request_text_with_model_does_not_include_provider_routing():
     class _Message:
         def __init__(self, content: str) -> None:

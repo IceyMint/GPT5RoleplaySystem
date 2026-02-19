@@ -44,7 +44,19 @@ def _field_as_dict(value: Any) -> Dict[str, Any]:
         if isinstance(dumped, dict):
             return dumped
     data: Dict[str, Any] = {}
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_tokens_details", "cache_discount"):
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "prompt_tokens_details",
+        "completion_tokens_details",
+        "input_tokens_details",
+        "output_tokens_details",
+        "reasoning_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "cache_discount",
+    ):
         if hasattr(value, key):
             data[key] = getattr(value, key)
     return data
@@ -100,6 +112,50 @@ def _coerce_text_content(value: Any) -> str:
 
 def _message_content_text(message: Any) -> str:
     return _coerce_text_content(getattr(message, "content", None)).strip()
+
+
+def _truncate_text(value: str, limit: int = 4000) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f"{text[:limit]}... (truncated {omitted} chars)"
+
+
+def _json_safe(value: Any, depth: int = 0) -> Any:
+    if depth >= 6:
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item, depth + 1) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _json_safe(model_dump(), depth + 1)
+    as_dict = getattr(value, "dict", None)
+    if callable(as_dict):
+        return _json_safe(as_dict(), depth + 1)
+    attrs = getattr(value, "__dict__", None)
+    if isinstance(attrs, dict) and attrs:
+        filtered = {str(key): item for key, item in attrs.items() if not str(key).startswith("_")}
+        if filtered:
+            return _json_safe(filtered, depth + 1)
+    return str(value)
+
+
+def _extract_reasoning_tokens(completion: Any) -> int:
+    usage_map = _field_as_dict(_field_get(completion, "usage"))
+    if not usage_map:
+        return 0
+    completion_details = _field_as_dict(_field_get(usage_map, "completion_tokens_details", {}))
+    output_details = _field_as_dict(_field_get(usage_map, "output_tokens_details", {}))
+    return max(
+        _to_int(_field_get(completion_details, "reasoning_tokens", 0)),
+        _to_int(_field_get(output_details, "reasoning_tokens", 0)),
+        _to_int(_field_get(usage_map, "reasoning_tokens", 0)),
+    )
 
 
 @dataclass
@@ -415,6 +471,9 @@ class LLMClient:
     ) -> List[ExtractedFact]:
         return []
 
+    def consume_reasoning_trace(self, label: str) -> Dict[str, Any] | None:
+        return None
+
 
 class RuleBasedLLMClient(LLMClient):
     async def is_addressed_to_me(
@@ -591,6 +650,82 @@ class OpenRouterLLMClient(LLMClient):
         self._fallback = fallback or RuleBasedLLMClient()
         actual_base_url = self._base_url if self._base_url else None
         self._client = OpenAI(api_key=self._api_key, base_url=actual_base_url, timeout=self._timeout)
+        self._reasoning_traces: Dict[str, Dict[str, Any]] = {}
+
+    def _reasoning_trace_store(self) -> Dict[str, Dict[str, Any]]:
+        traces = getattr(self, "_reasoning_traces", None)
+        if isinstance(traces, dict):
+            return traces
+        traces = {}
+        self._reasoning_traces = traces
+        return traces
+
+    def _clear_reasoning_trace(self, label: str) -> None:
+        if not label:
+            return
+        self._reasoning_trace_store().pop(label, None)
+
+    def consume_reasoning_trace(self, label: str) -> Dict[str, Any] | None:
+        if not label:
+            return None
+        payload = self._reasoning_trace_store().pop(label, None)
+        return payload if isinstance(payload, dict) else None
+
+    def _record_reasoning_trace(
+        self,
+        label: str,
+        request_type: str,
+        kwargs: Dict[str, Any],
+        completion: Any,
+    ) -> None:
+        if not label:
+            return
+
+        usage_map = _field_as_dict(_field_get(completion, "usage"))
+        prompt_tokens = _to_int(_field_get(usage_map, "prompt_tokens", 0))
+        completion_tokens = _to_int(_field_get(usage_map, "completion_tokens", 0))
+        total_tokens = _to_int(_field_get(usage_map, "total_tokens", prompt_tokens + completion_tokens))
+        reasoning_tokens = _extract_reasoning_tokens(completion)
+
+        message = None
+        choices = _field_get(completion, "choices")
+        if isinstance(choices, list) and choices:
+            message = _field_get(choices[0], "message")
+
+        reasoning_text = ""
+        reasoning_details_payload: Any = None
+        if message is not None:
+            reasoning_value = _field_get(message, "reasoning")
+            reasoning_details = _field_get(message, "reasoning_details")
+            reasoning_text = _truncate_text(_coerce_text_content(reasoning_value))
+            if not reasoning_text:
+                reasoning_text = _truncate_text(_coerce_text_content(reasoning_details))
+            reasoning_details_payload = _json_safe(reasoning_details)
+
+        extra_body = kwargs.get("extra_body")
+        extra_body_map = extra_body if isinstance(extra_body, dict) else {}
+        include_reasoning = bool(_field_get(extra_body_map, "include_reasoning", False))
+        reasoning_effort = str(_field_get(extra_body_map, "reasoning_effort", "") or "").strip()
+        provider_payload = _json_safe(_field_get(extra_body_map, "provider")) if "provider" in extra_body_map else None
+
+        payload: Dict[str, Any] = {
+            "label": label,
+            "request_type": request_type,
+            "model": str(kwargs.get("model", "") or ""),
+            "include_reasoning": include_reasoning,
+            "reasoning_effort": reasoning_effort or None,
+            "reasoning_tokens": reasoning_tokens,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "reasoning_text": reasoning_text,
+            "reasoning_details": reasoning_details_payload,
+            "has_reasoning": bool(reasoning_text or reasoning_details_payload or reasoning_tokens > 0),
+        }
+        if provider_payload is not None:
+            payload["provider"] = provider_payload
+
+        self._reasoning_trace_store()[label] = payload
 
     def _record_cache_usage(self, request_type: str, completion: Any) -> None:
         sample = _extract_prompt_cache_usage(completion)
@@ -929,25 +1064,42 @@ class OpenRouterLLMClient(LLMClient):
             return True
         return status_code == 404 and "no endpoints found" in text
 
-    def _request_structured_raw_create(self, kwargs: Dict[str, Any], *, request_type: str) -> str | None:
+    def _request_structured_raw_create(
+        self,
+        kwargs: Dict[str, Any],
+        *,
+        request_type: str,
+        trace_label: str = "",
+    ) -> str | None:
         try:
             debug_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
             debug_completion = self._client.chat.completions.create(**debug_kwargs)
             self._record_cache_usage(request_type, debug_completion)
+            if trace_label:
+                self._record_reasoning_trace(trace_label, request_type, debug_kwargs, debug_completion)
             if debug_completion.choices:
                 return _message_content_text(debug_completion.choices[0].message)
         except Exception as debug_exc:
             logger.error("Failed to fetch raw text for cleanup: %s", debug_exc)
         return None
 
-    def _request_structured(self, model_class: Any, kwargs: Dict[str, Any]) -> Optional[Any]:
+    def _request_structured(
+        self,
+        model_class: Any,
+        kwargs: Dict[str, Any],
+        *,
+        trace_label: str = "",
+    ) -> Optional[Any]:
         """Execute a structured parse request with fallback cleanup for malformed JSON."""
+        if trace_label:
+            self._clear_reasoning_trace(trace_label)
         parse_cache = self._structured_parse_cache()
         parse_key = self._structured_parse_key(kwargs)
         if parse_key in parse_cache:
             raw_text = self._request_structured_raw_create(
                 kwargs,
                 request_type="structured.cached_create",
+                trace_label=trace_label,
             )
             if raw_text:
                 try:
@@ -963,6 +1115,8 @@ class OpenRouterLLMClient(LLMClient):
         try:
             completion = self._client.chat.completions.parse(**kwargs)
             self._record_cache_usage("structured.parse", completion)
+            if trace_label:
+                self._record_reasoning_trace(trace_label, "structured.parse", kwargs, completion)
             if not completion.choices:
                 return None
             message = completion.choices[0].message
@@ -991,6 +1145,8 @@ class OpenRouterLLMClient(LLMClient):
             completion = getattr(exc, "completion", None)
             if completion is not None:
                 self._record_cache_usage("structured.parse_error", completion)
+                if trace_label:
+                    self._record_reasoning_trace(trace_label, "structured.parse_error", kwargs, completion)
             if completion and completion.choices:
                 raw_text = _message_content_text(completion.choices[0].message)
 
@@ -1000,6 +1156,7 @@ class OpenRouterLLMClient(LLMClient):
                 raw_text = self._request_structured_raw_create(
                     kwargs,
                     request_type="structured.debug_create",
+                    trace_label=trace_label,
                 )
 
             if raw_text:
@@ -1008,9 +1165,26 @@ class OpenRouterLLMClient(LLMClient):
                     return model_class.model_validate_json(cleaned)
                 except Exception as final_exc:
                     logger.warning("Robust parse failed even after cleanup: %s. Raw:\n%s", final_exc, raw_text)
-            
+
             logger.warning("Structured request failed (%s): %s", exc.__class__.__name__, exc)
             return None
+
+    def _request_structured_with_trace(
+        self,
+        model_class: Any,
+        kwargs: Dict[str, Any],
+        *,
+        trace_label: str,
+    ) -> Optional[Any]:
+        request_fn = getattr(self, "_request_structured")
+        try:
+            return request_fn(model_class, kwargs, trace_label=trace_label)
+        except TypeError as exc:
+            # Backward-compatible for tests/subclasses that override _request_structured
+            # without the trace_label keyword.
+            if "trace_label" not in str(exc):
+                raise
+            return request_fn(model_class, kwargs)
 
     def _request_bundle(
         self,
@@ -1030,7 +1204,7 @@ class OpenRouterLLMClient(LLMClient):
             "temperature": self._temperature,
         }
         self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
-        return self._request_structured(StructuredBundle, kwargs)
+        return self._request_structured_with_trace(StructuredBundle, kwargs, trace_label="bundle")
 
     def _request_state_update(
         self,
@@ -1050,7 +1224,7 @@ class OpenRouterLLMClient(LLMClient):
             "temperature": self._temperature,
         }
         self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
-        return self._request_structured(StructuredStateUpdate, kwargs)
+        return self._request_structured_with_trace(StructuredStateUpdate, kwargs, trace_label="state")
 
     def _request_autonomous_bundle(
         self,
@@ -1068,7 +1242,7 @@ class OpenRouterLLMClient(LLMClient):
             "temperature": self._temperature,
         }
         self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True)
-        return self._request_structured(StructuredBundle, kwargs)
+        return self._request_structured_with_trace(StructuredBundle, kwargs, trace_label="autonomy")
 
     def _request_facts_from_chat(self, chat: InboundChat, context: ConversationContext) -> Optional[StructuredFactsOnly]:
         evidence_messages: List[InboundChat] = list(context.recent_messages[-12:])
@@ -1122,7 +1296,7 @@ class OpenRouterLLMClient(LLMClient):
             "temperature": 0.0,
         }
         self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True, provider_for_facts=True)
-        return self._request_structured(StructuredFactsOnly, kwargs)
+        return self._request_structured_with_trace(StructuredFactsOnly, kwargs, trace_label="facts")
 
     def extract_facts_from_evidence_sync(
         self,
@@ -1164,8 +1338,10 @@ class OpenRouterLLMClient(LLMClient):
             bool(self._reasoning) if include_reasoning is None else bool(include_reasoning and self._reasoning)
         )
         self._apply_extra_body(kwargs, include_reasoning=reasoning_enabled, include_provider=True)
+        self._clear_reasoning_trace("text")
         completion = self._client.chat.completions.create(**kwargs)
         self._record_cache_usage("text.create", completion)
+        self._record_reasoning_trace("text", "text.create", kwargs, completion)
         if not completion.choices:
             return ""
         message = completion.choices[0].message
@@ -1199,8 +1375,10 @@ class OpenRouterLLMClient(LLMClient):
             include_reasoning=reasoning_enabled,
             include_provider=bool(include_provider),
         )
+        self._clear_reasoning_trace("text_with_model")
         completion = self._client.chat.completions.create(**kwargs)
         self._record_cache_usage("text_with_model.create", completion)
+        self._record_reasoning_trace("text_with_model", "text_with_model.create", kwargs, completion)
         if not completion.choices:
             return ""
         message = completion.choices[0].message

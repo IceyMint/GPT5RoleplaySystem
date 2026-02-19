@@ -184,6 +184,31 @@ class NeverAddressedLLM(LLMClient):
         return ""
 
 
+class ReasoningTraceLLM(EchoLLMClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self._consumed = False
+
+    def consume_reasoning_trace(self, label: str):
+        if label != "bundle" or self._consumed:
+            return None
+        self._consumed = True
+        return {
+            "label": "bundle",
+            "request_type": "structured.parse",
+            "model": "moonshotai/kimi-k2.5",
+            "include_reasoning": True,
+            "reasoning_effort": "low",
+            "reasoning_tokens": 64,
+            "prompt_tokens": 1200,
+            "completion_tokens": 220,
+            "total_tokens": 1420,
+            "reasoning_text": "The message directly addresses the persona.",
+            "reasoning_details": [{"type": "reasoning.text", "text": "Direct mention"}],
+            "has_reasoning": True,
+        }
+
+
 
 def test_pipeline_returns_action():
     pipeline = MessagePipeline(
@@ -1618,6 +1643,38 @@ def test_pipeline_logs_llm_prompt_and_response():
     event_names = [name for name, _ in tracer.events]
     assert "llm_prompt_bundle" in event_names
     assert "llm_response_bundle" in event_names
+
+
+def test_pipeline_logs_reasoning_trace_for_bundle():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="TracePersona",
+        user_id="ai-1",
+        llm=ReasoningTraceLLM(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Trace this reasoning",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 99,
+            }
+        )
+    )
+
+    reasoning_payloads = [payload for name, payload in tracer.events if name == "llm_reasoning_bundle"]
+    assert reasoning_payloads
+    payload = reasoning_payloads[-1]
+    assert payload["has_reasoning"] is True
+    assert payload["reasoning_tokens"] == 64
+    assert payload["reasoning_effort"] == "low"
 
 
 def test_experience_created_on_episode_boundary():

@@ -433,6 +433,7 @@ class MessagePipeline:
             bundle.autonomy_decision = override_decision
             bundle.next_delay_seconds = override_delay
         self._tracer.log_event("llm_response_bundle", self._bundle_response_payload(bundle))
+        self._log_reasoning_trace("bundle", "llm_reasoning_bundle")
         if bundle.text:
             self._rolling_buffer.add_ai_message(bundle.text, self._persona)
             self._memory.add_ai_message(bundle.text, self._persona)
@@ -1180,25 +1181,26 @@ class MessagePipeline:
             max_ts = float(sweep.get("max_ts", 0.0) or 0.0)
             if max_ts > self._facts_cursor_ts:
                 self._facts_cursor_ts = max_ts
-            self._tracer.log_event(
-                "facts_sweep",
-                {
-                    "mode": self._facts_mode,
-                    "flush_reason": flush_reason if chunk_index == 0 else "drain",
-                    "pending_before": pending_before if chunk_index == 0 else len(remaining) + len(chunk),
-                    "pending_after": len(remaining),
-                    "pending_age_seconds": pending_age_seconds if chunk_index == 0 else 0.0,
-                    "messages": int(sweep.get("messages", len(chunk))),
-                    "participants": int(sweep.get("participants", len(participants))),
-                    "facts_extracted": int(sweep.get("facts_extracted", 0)),
-                    "fact_strings_extracted": int(sweep.get("fact_strings_extracted", 0)),
-                    "fact_strings_stored": int(sweep.get("fact_strings_stored", 0)),
-                    "people_updated": int(sweep.get("people_updated", 0)),
-                    "cursor_before": cursor_before,
-                    "cursor_after": self._facts_cursor_ts,
-                    "max_ts": max_ts,
-                },
-            )
+            payload = {
+                "mode": self._facts_mode,
+                "flush_reason": flush_reason if chunk_index == 0 else "drain",
+                "pending_before": pending_before if chunk_index == 0 else len(remaining) + len(chunk),
+                "pending_after": len(remaining),
+                "pending_age_seconds": pending_age_seconds if chunk_index == 0 else 0.0,
+                "messages": int(sweep.get("messages", len(chunk))),
+                "participants": int(sweep.get("participants", len(participants))),
+                "facts_extracted": int(sweep.get("facts_extracted", 0)),
+                "fact_strings_extracted": int(sweep.get("fact_strings_extracted", 0)),
+                "fact_strings_stored": int(sweep.get("fact_strings_stored", 0)),
+                "people_updated": int(sweep.get("people_updated", 0)),
+                "cursor_before": cursor_before,
+                "cursor_after": self._facts_cursor_ts,
+                "max_ts": max_ts,
+            }
+            reasoning_trace = sweep.get("reasoning")
+            if isinstance(reasoning_trace, dict) and reasoning_trace:
+                payload["reasoning"] = reasoning_trace
+            self._tracer.log_event("facts_sweep", payload)
             chunk_index += 1
         self._facts_task = None
         if self._facts_pending_messages:
@@ -1217,12 +1219,13 @@ class MessagePipeline:
             }
         context = self._facts_context(participants, messages)
         facts = self._llm.extract_facts_from_evidence_sync(context, messages, participants)
+        reasoning_trace = self._llm.consume_reasoning_trace("facts")
         fact_strings_extracted = sum(len(fact.facts) for fact in facts)
         stored_stats = {"fact_strings_stored": 0, "people_updated": 0}
         if facts:
             stored_stats = self._store_facts(facts, participants)
         timestamps = [float(message.timestamp or 0.0) for message in messages]
-        return {
+        payload = {
             "messages": len(messages),
             "participants": len(participants),
             "facts_extracted": len(facts),
@@ -1231,6 +1234,9 @@ class MessagePipeline:
             "people_updated": int(stored_stats.get("people_updated", 0)),
             "max_ts": max(timestamps) if timestamps else self._facts_cursor_ts,
         }
+        if isinstance(reasoning_trace, dict) and reasoning_trace:
+            payload["reasoning"] = reasoning_trace
+        return payload
 
     def _store_facts(self, facts: List[ExtractedFact], participants: List[Participant]) -> Dict[str, int]:
         alias_to_id: Dict[str, str] = {}
@@ -1480,6 +1486,7 @@ class MessagePipeline:
         self._autonomy_decision = decision
         self._autonomy_delay_hint_seconds = delay_hint
         self._tracer.log_event("llm_response_autonomy", self._bundle_response_payload(bundle))
+        self._log_reasoning_trace("autonomy", "llm_reasoning_autonomy")
         chat_texts = self._chat_texts_from_actions(bundle.actions)
         for text in chat_texts:
             self._rolling_buffer.add_ai_message(text, self._persona)
@@ -1739,6 +1746,11 @@ class MessagePipeline:
             return ""
         key = str(self._persona or "").casefold()
         return str(self._persona_profiles.get(key, "") or "")
+
+    def _log_reasoning_trace(self, label: str, event_name: str) -> None:
+        trace = self._llm.consume_reasoning_trace(label)
+        if isinstance(trace, dict) and trace:
+            self._tracer.log_event(event_name, trace)
 
     @staticmethod
     def _bundle_response_payload(bundle: LLMResponseBundle) -> Dict[str, Any]:

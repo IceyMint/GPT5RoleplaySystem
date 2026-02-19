@@ -41,6 +41,11 @@ Most useful events come from the pipeline:
   - payload: full structured prompt context for chat mode
 - `event/llm_response_bundle`
   - payload: structured model output (text/actions/facts/hints/summary)
+- `event/llm_reasoning_bundle`
+  - payload: OpenRouter reasoning telemetry for chat bundle calls
+  - includes: `reasoning_text`, `reasoning_details`, `reasoning_tokens`,
+    `prompt_tokens`, `completion_tokens`, `total_tokens`,
+    `reasoning_effort`, `include_reasoning`, model/request metadata
 - `event/llm_prompt_state`
   - payload: structured prompt context for chat mode when chat output is disabled
 - `event/llm_response_state`
@@ -49,10 +54,15 @@ Most useful events come from the pipeline:
   - payload: structured prompt context for autonomy mode
 - `event/llm_response_autonomy`
   - payload: structured autonomy output
+- `event/llm_reasoning_autonomy`
+  - payload: OpenRouter reasoning telemetry for autonomous bundle calls
 - `event/episode_summary`
   - payload: reason, messages, overlap
 - `event/response`
   - payload: number of actions + batch size
+- `event/facts_sweep`
+  - payload now optionally includes `reasoning` when fact extraction returns
+    reasoning metadata from OpenRouter
 
 ## Notes and Safety
 
