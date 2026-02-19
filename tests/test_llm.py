@@ -221,6 +221,59 @@ def test_format_autonomous_context_omits_persona_identity_fields():
     assert payload["user_id"] == "ai-uuid"
 
 
+def test_format_facts_context_includes_only_relevant_people():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    evidence = [
+        InboundChat(
+            text="Daddy is sick and will be offline for a week. James can you tell mommy?",
+            sender_id="user-1",
+            sender_name="stacy",
+            timestamp=1.0,
+            raw={},
+        )
+    ]
+    participants = [
+        Participant(user_id="user-1", name="Stacy"),
+        Participant(user_id="user-2", name="James Allardyce"),
+        Participant(user_id="00000000-0000-0000-0000-000000000000", name="00000000-0000-0000-0000-000000000000"),
+    ]
+    people_facts = {
+        "user-1": {
+            "name": "stacy",
+            "facts": ["prefers tea", "wears blue"],
+            "relationships": [{"target_id": "user-2", "relationship": "child_of"}],
+        },
+        "user-2": {
+            "name": "James Allardyce",
+            "facts": ["is a father", "likes tea"],
+            "full_name": "James Allardyce (james9091)",
+        },
+        "user-3": {
+            "name": "Old Friend",
+            "facts": ["lives far away"],
+        },
+    }
+
+    payload = json.loads(
+        client._format_facts_context_from_messages(
+            evidence_messages=evidence,
+            participants=participants,
+            persona="persona",
+            user_id="ai-uuid",
+            summary="",
+            summary_meta={},
+            related_experiences=[],
+            people_facts=people_facts,
+        )
+    )
+
+    participant_ids = {entry.get("user_id") for entry in payload["participants"]}
+    assert participant_ids == {"user-1", "user-2"}
+    assert set(payload["people_facts"].keys()) == {"user-1", "user-2"}
+    assert set(payload["people_facts"]["user-1"].keys()) == {"name", "facts"}
+    assert set(payload["people_facts"]["user-2"].keys()) == {"name", "facts"}
+
+
 def test_format_address_check_handles_participant_without_username_field():
     client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
@@ -416,7 +469,7 @@ def test_request_facts_uses_facts_model_with_facts_provider_override():
         "order": ["siliconflow"],
         "allow_fallbacks": False,
     }
-    assert client.captured["extra_body"]["include_reasoning"] is True
+    assert "include_reasoning" not in client.captured["extra_body"]
 
 
 def test_request_facts_provider_routing_falls_back_to_global_provider():
@@ -465,7 +518,7 @@ def test_request_facts_provider_routing_falls_back_to_global_provider():
         "order": ["siliconflow"],
         "allow_fallbacks": False,
     }
-    assert client.captured["extra_body"]["include_reasoning"] is True
+    assert "include_reasoning" not in client.captured["extra_body"]
 
 
 def test_is_addressed_to_me_uses_address_model_with_reasoning():

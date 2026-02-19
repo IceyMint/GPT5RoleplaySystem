@@ -536,8 +536,10 @@ class MessagePipeline:
         participants: List[Participant],
         query_text: str | None = None,
     ) -> ConversationContext:
+        query = (query_text or (chat.text if chat else "")).strip()
         user_ids = [participant.user_id for participant in participants if participant.user_id]
         people = await asyncio.to_thread(self._knowledge_store.fetch_people, user_ids)
+        match_metadata: Dict[str, Dict[str, str]] = {}
         unresolved_names = []
         for participant in participants:
             if participant.user_id and participant.user_id in people:
@@ -553,7 +555,6 @@ class MessagePipeline:
             for user_id, profile in extras.items():
                 if user_id not in people:
                     people[user_id] = profile
-        match_metadata: Dict[str, Dict[str, str]] = {}
         remaining_names = []
         known_names = {profile.name.lower() for profile in people.values() if profile.name}
         for name in unresolved_names:
@@ -577,8 +578,25 @@ class MessagePipeline:
                 "match_type": "partial_name",
                 "matched_query": name,
             }
+        mention_tokens = self._mention_lookup_tokens(query)
+        for token in mention_tokens:
+            matches = await asyncio.to_thread(
+                self._knowledge_store.fetch_people_by_partial_name,
+                [token],
+            )
+            if len(matches) != 1:
+                continue
+            user_id, profile = next(iter(matches.items()))
+            if user_id not in people:
+                people[user_id] = profile
+            match_metadata.setdefault(
+                user_id,
+                {
+                    "match_type": "text_mention",
+                    "matched_query": token,
+                },
+            )
         recent = self._memory.recent()
-        query = (query_text or (chat.text if chat else "")).strip()
         persona_experiences = self._experiences_for_persona(self._experience_store.all())
         candidate_limit = self._experience_top_k
         if self._routine_summary_enabled and self._routine_summary_limit > 0:
@@ -1815,6 +1833,49 @@ class MessagePipeline:
             seen.add(lower)
             deduped.append(lower)
         return deduped
+
+    @staticmethod
+    def _mention_lookup_tokens(text: str, max_tokens: int = 8) -> List[str]:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return []
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for raw in cleaned.split():
+            token = raw.strip(".,!?;:()[]{}<>\"'`")
+            if token.startswith("@"):
+                token = token[1:]
+            token = token.strip()
+            if len(token) < 4:
+                continue
+            if not any(ch.isalpha() for ch in token):
+                continue
+            if MessagePipeline._looks_like_uuid(token):
+                continue
+            lowered = token.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            deduped.append(lowered)
+            if len(deduped) >= max_tokens:
+                break
+        return deduped
+
+    @staticmethod
+    def _looks_like_uuid(value: str) -> bool:
+        candidate = str(value or "").strip()
+        if not candidate:
+            return False
+        parts = candidate.split("-")
+        if len(parts) != 5:
+            return False
+        expected_lengths = (8, 4, 4, 4, 12)
+        for part, expected in zip(parts, expected_lengths):
+            if len(part) != expected:
+                return False
+            if any(ch not in "0123456789abcdefABCDEF" for ch in part):
+                return False
+        return True
 
     @staticmethod
     def _merge_related_experiences(

@@ -1395,6 +1395,39 @@ def test_pipeline_partial_name_fallback_marks_context():
     )
 
 
+def test_pipeline_text_mention_lookup_marks_context():
+    llm = ContextCaptureLLM()
+    store = InMemoryKnowledgeStore()
+    store.upsert_person_facts("user-42", "James Allardyce", ["is a father"])
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=store,
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "James is sick and will be offline for a week.",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 7,
+            }
+        )
+    )
+
+    assert llm.contexts
+    people_facts = llm.contexts[-1].people_facts
+    assert "user-42" in people_facts
+    assert people_facts["user-42"].get("match_type") == "text_mention"
+    assert people_facts["user-42"].get("matched_query") == "james"
+
+
 def test_token_similarity_search_returns_relevant():
     from gpt5_roleplay_system.memory import ExperienceStore, TokenSimilaritySearch
 

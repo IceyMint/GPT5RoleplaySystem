@@ -26,6 +26,10 @@ from .models import Action, CommandType, ConversationContext, EnvironmentSnapsho
 from .name_utils import split_display_and_username
 
 logger = logging.getLogger("gpt5_roleplay_llm")
+_UUID_LIKE_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    flags=re.IGNORECASE,
+)
 
 
 def _field_as_dict(value: Any) -> Dict[str, Any]:
@@ -1295,7 +1299,7 @@ class OpenRouterLLMClient(LLMClient):
             "max_tokens": max(self._max_tokens, 500),
             "temperature": 0.0,
         }
-        self._apply_extra_body(kwargs, include_reasoning=True, include_provider=True, provider_for_facts=True)
+        self._apply_extra_body(kwargs, include_reasoning=False, include_provider=True, provider_for_facts=True)
         return self._request_structured_with_trace(StructuredFactsOnly, kwargs, trace_label="facts")
 
     def extract_facts_from_evidence_sync(
@@ -1564,16 +1568,119 @@ class OpenRouterLLMClient(LLMClient):
         evidence_payload: List[Dict[str, Any]] = []
         for message in trimmed_evidence[:-1]:
             evidence_payload.append(self._chat_payload(message))
+        filtered_participants, filtered_people_facts = self._filter_facts_entities(
+            evidence_messages=trimmed_evidence,
+            participants=participants,
+            people_facts=people_facts,
+        )
         payload = {
             "persona": persona,
             "user_id": user_id,
-            "participants": self._stable_participants_payload(participants),
-            "people_facts": self._canonicalize_for_prompt(people_facts),
+            "participants": self._stable_participants_payload(filtered_participants),
+            "people_facts": self._canonicalize_for_prompt(filtered_people_facts),
             "evidence_messages": evidence_payload,
             "incoming": self._chat_payload(incoming),
             "now_timestamp": format_pacific_time(),
         }
         return self._serialize_payload(payload)
+
+    @classmethod
+    def _filter_facts_entities(
+        cls,
+        evidence_messages: List[InboundChat],
+        participants: List[Participant],
+        people_facts: Dict[str, Any],
+    ) -> tuple[List[Participant], Dict[str, Dict[str, Any]]]:
+        text_blob = " ".join(str(message.text or "") for message in evidence_messages)
+        sender_ids = {str(message.sender_id or "").strip() for message in evidence_messages if str(message.sender_id or "").strip()}
+        sender_names = {
+            _normalize_name(str(message.sender_name or ""))
+            for message in evidence_messages
+            if str(message.sender_name or "").strip()
+        }
+        sender_names.discard("")
+
+        filtered_people_facts: Dict[str, Dict[str, Any]] = {}
+        relevant_user_ids = set(sender_ids)
+        for raw_user_id, raw_profile in (people_facts or {}).items():
+            user_id = str(raw_user_id or "").strip()
+            profile = raw_profile if isinstance(raw_profile, dict) else {}
+            include = bool(user_id and user_id in sender_ids)
+            if not include:
+                include = cls._profile_mentioned_in_text(profile, text_blob)
+            if not include:
+                continue
+            relevant_user_ids.add(user_id)
+            filtered_people_facts[user_id] = cls._minimal_people_fact_profile(profile)
+
+        filtered_participants: List[Participant] = []
+        seen_participants: set[str] = set()
+        for participant in participants or []:
+            user_id = str(participant.user_id or "").strip()
+            name = str(participant.name or "").strip()
+            include = bool(user_id and user_id in relevant_user_ids)
+            if not include and not user_id:
+                normalized_name = _normalize_name(name)
+                include = bool(normalized_name and normalized_name in sender_names)
+            if not include:
+                include = cls._name_mentioned_in_text(name, text_blob)
+            if not include:
+                continue
+            key = user_id or _normalize_name(name)
+            if not key or key in seen_participants:
+                continue
+            seen_participants.add(key)
+            filtered_participants.append(Participant(user_id=user_id, name=name))
+
+        return filtered_participants, filtered_people_facts
+
+    @staticmethod
+    def _minimal_people_fact_profile(profile: Dict[str, Any], max_facts: int = 6) -> Dict[str, Any]:
+        name = str(
+            profile.get("name")
+            or profile.get("username")
+            or profile.get("display_name")
+            or profile.get("full_name")
+            or ""
+        ).strip()
+        facts_raw = profile.get("facts", [])
+        facts: List[str] = []
+        if isinstance(facts_raw, list):
+            for item in facts_raw:
+                value = str(item or "").strip()
+                if not value:
+                    continue
+                facts.append(value)
+                if len(facts) >= max_facts:
+                    break
+        return {"name": name, "facts": facts}
+
+    @classmethod
+    def _profile_mentioned_in_text(cls, profile: Dict[str, Any], text: str) -> bool:
+        for key in ("name", "username", "display_name", "full_name"):
+            candidate = str(profile.get(key, "") or "").strip()
+            if cls._name_mentioned_in_text(candidate, text):
+                return True
+        return False
+
+    @staticmethod
+    def _name_mentioned_in_text(name: str, text: str) -> bool:
+        raw_name = str(name or "").strip()
+        if not raw_name or _UUID_LIKE_RE.match(raw_name):
+            return False
+        normalized_text = _normalize_name(text)
+        if not normalized_text:
+            return False
+        display_name, username = split_display_and_username(raw_name)
+        for candidate in (raw_name, display_name, username):
+            normalized_candidate = _normalize_name(str(candidate or ""))
+            if len(normalized_candidate) < 3:
+                continue
+            if _UUID_LIKE_RE.match(normalized_candidate):
+                continue
+            if _name_in_text(normalized_candidate, normalized_text):
+                return True
+        return False
 
     def _format_autonomous_context(self, context: ConversationContext, activity: Dict[str, Any]) -> str:
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
@@ -1872,7 +1979,6 @@ def _collect_other_names(
     participants: List[Participant] | None,
     sender_name: str,
 ) -> List[str]:
-    stopwords = {"the", "and", "you", "hey", "hi"}
     names: List[str] = []
 
     def add_name(value: str) -> None:
@@ -1880,6 +1986,10 @@ def _collect_other_names(
         if not norm or norm == persona_norm:
             return
         if norm == _normalize_name(sender_name):
+            return
+        if len(norm) < 3:
+            return
+        if not any(ch.isalpha() for ch in norm):
             return
         names.append(norm)
 
@@ -1892,7 +2002,7 @@ def _collect_other_names(
     deduped = []
     seen = set()
     for name in names:
-        if name in stopwords or name in seen:
+        if name in seen:
             continue
         seen.add(name)
         deduped.append(name)
