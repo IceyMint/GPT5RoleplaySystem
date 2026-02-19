@@ -360,6 +360,162 @@ class Neo4jKnowledgeStore(KnowledgeStore):
                 last_seen_ts=last_seen_ts,
             )
 
+    def init_runtime_marker(self, runtime_key: str, initialized_ts: float) -> None:
+        with self._session() as session:
+            session.run(
+                "MERGE (m:SystemRuntime {name: $name}) "
+                "SET m.status = coalesce(m.status, 'idle'), "
+                "    m.initialized_ts = coalesce(m.initialized_ts, $initialized_ts)",
+                name=runtime_key,
+                initialized_ts=float(initialized_ts),
+            )
+
+    def mark_runtime_running(self, runtime_key: str, started_ts: float) -> None:
+        with self._session() as session:
+            session.run(
+                "MERGE (m:SystemRuntime {name: $name}) "
+                "SET m.status = 'running', "
+                "    m.last_started_ts = $last_started_ts, "
+                "    m.last_error = ''",
+                name=runtime_key,
+                last_started_ts=float(started_ts),
+            )
+
+    def mark_runtime_success(self, runtime_key: str, payload: dict[str, Any]) -> None:
+        data = dict(payload or {})
+        status = str(data.pop("status", "success") or "success")
+        with self._session() as session:
+            session.run(
+                "MERGE (m:SystemRuntime {name: $name}) "
+                "SET m.status = $status, "
+                "    m += $payload",
+                name=runtime_key,
+                status=status,
+                payload=data,
+            )
+
+    def mark_runtime_error(self, runtime_key: str, payload: dict[str, Any]) -> None:
+        data = dict(payload or {})
+        with self._session() as session:
+            session.run(
+                "MERGE (m:SystemRuntime {name: $name}) "
+                "SET m.status = 'error', "
+                "    m += $payload",
+                name=runtime_key,
+                payload=data,
+            )
+
+    def fetch_facts_dedupe_candidates(self) -> list[dict[str, Any]]:
+        query = (
+            "MATCH (p:Person) "
+            "WHERE size(coalesce(p.facts, [])) > 1 AND coalesce(p.needs_dedupe, false) = true "
+            "RETURN p.user_id as user_id, p.name as name, p.facts as facts"
+        )
+        with self._session() as session:
+            return [dict(record) for record in session.run(query)]
+
+    def apply_deduped_facts(
+        self,
+        user_id: str,
+        refined_facts: list[str],
+        *,
+        deduped_ts: float,
+    ) -> None:
+        with self._session() as session:
+            session.run(
+                "MATCH (p:Person {user_id: $user_id}) "
+                "SET p.facts = $facts, "
+                "    p.needs_dedupe = false, "
+                "    p.facts_deduped_ts = $facts_deduped_ts",
+                user_id=user_id,
+                facts=refined_facts,
+                facts_deduped_ts=float(deduped_ts),
+            )
+
+    def mark_facts_deduped(self, user_id: str, *, deduped_ts: float) -> None:
+        with self._session() as session:
+            session.run(
+                "MATCH (p:Person {user_id: $user_id}) "
+                "SET p.needs_dedupe = false, "
+                "    p.facts_deduped_ts = $facts_deduped_ts",
+                user_id=user_id,
+                facts_deduped_ts=float(deduped_ts),
+            )
+
+    def fetch_experience_dedupe_candidates(
+        self,
+        *,
+        index_name: str,
+        neighbor_k: int,
+        score_floor: float,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "MATCH (e:Experience) "
+            "WHERE e.embedding IS NOT NULL AND e.id IS NOT NULL AND coalesce(e.persona_id, '') <> '' "
+            "CALL db.index.vector.queryNodes($index_name, $neighbor_k, e.embedding) YIELD node, score "
+            "WHERE node:Experience "
+            "  AND node.id IS NOT NULL "
+            "  AND e.id < node.id "
+            "  AND coalesce(node.persona_id, '') = coalesce(e.persona_id, '') "
+            "  AND score >= $score_floor "
+            "RETURN "
+            "  e.id AS left_id, "
+            "  coalesce(e.timestamp, 0.0) AS left_timestamp, "
+            "  coalesce(e.timestamp_start, '') AS left_timestamp_start, "
+            "  coalesce(e.timestamp_end, '') AS left_timestamp_end, "
+            "  node.id AS right_id, "
+            "  coalesce(node.timestamp, 0.0) AS right_timestamp, "
+            "  coalesce(node.timestamp_start, '') AS right_timestamp_start, "
+            "  coalesce(node.timestamp_end, '') AS right_timestamp_end, "
+            "  score "
+            "ORDER BY score DESC"
+        )
+        with self._session() as session:
+            return [
+                dict(record)
+                for record in session.run(
+                    query,
+                    index_name=index_name,
+                    neighbor_k=int(neighbor_k),
+                    score_floor=float(score_floor),
+                )
+            ]
+
+    def merge_experience_group(
+        self,
+        *,
+        keep_id: str,
+        dup_ids: list[str],
+        merged_timestamp: float,
+        merged_timestamp_start: str,
+        merged_timestamp_end: str,
+        deduped_ts: float,
+    ) -> int:
+        with self._session() as session:
+            row = session.run(
+                "MATCH (keep:Experience {id: $keep_id}) "
+                "SET keep.timestamp = $timestamp, "
+                "    keep.timestamp_start = $timestamp_start, "
+                "    keep.timestamp_end = $timestamp_end, "
+                "    keep.deduped_ts = $deduped_ts, "
+                "    keep.dedupe_count = toInteger(coalesce(keep.dedupe_count, 1)) + $duplicate_count, "
+                "    keep.merged_experience_ids = reduce(acc = coalesce(keep.merged_experience_ids, []), x IN $dup_ids | "
+                "        CASE WHEN x IN acc THEN acc ELSE acc + x END) "
+                "WITH keep "
+                "MATCH (dup:Experience) "
+                "WHERE dup.id IN $dup_ids "
+                "DETACH DELETE dup "
+                "RETURN count(dup) AS deleted_count",
+                keep_id=keep_id,
+                timestamp=float(merged_timestamp),
+                timestamp_start=merged_timestamp_start,
+                timestamp_end=merged_timestamp_end,
+                deduped_ts=float(deduped_ts),
+                duplicate_count=len(dup_ids),
+                dup_ids=dup_ids,
+            ).single()
+        return int(row.get("deleted_count", 0) if row else 0)
+
     @property
     def driver(self):
         return self._driver

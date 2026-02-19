@@ -21,6 +21,11 @@ from .memory import (
 )
 from .models import Action, CommandType, ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 from .time_utils import format_pacific_time
+from .autonomy_manager import AutonomyManager
+from .context_builder import ContextBuilder
+from .episode_manager import EpisodeManager
+from .fact_manager import FactManager
+from .pipeline_state import PipelineRuntimeState
 from .name_utils import (
     extract_display_name,
     extract_username,
@@ -144,6 +149,51 @@ class MessagePipeline:
             self._persona,
             self._user_id,
         )
+        self._runtime_state = PipelineRuntimeState(persona=self._persona, user_id=self._user_id)
+        self._runtime_state.llm_chat_enabled = self._llm_chat_enabled
+        self._runtime_state.environment = self._environment
+        self._runtime_state.participant_hints = self._participant_hints
+        self._runtime_state.display_names_by_id = self._display_names_by_id
+        self._autonomy_manager_component = AutonomyManager(self._runtime_state)
+        self._context_builder_component = ContextBuilder(
+            state=self._runtime_state,
+            knowledge_store=self._knowledge_store,
+            memory=self._memory,
+            experience_store=self._experience_store,
+            tracer=self._tracer,
+            experience_vector_index=self._experience_vector_index,
+            experience_top_k=self._experience_top_k,
+            experience_score_min=self._experience_score_min,
+            experience_score_delta=self._experience_score_delta,
+            near_duplicate_collapse_enabled=self._near_duplicate_collapse_enabled,
+            near_duplicate_similarity=self._near_duplicate_similarity,
+            routine_summary_enabled=self._routine_summary_enabled,
+            routine_summary_limit=self._routine_summary_limit,
+            routine_summary_min_count=self._routine_summary_min_count,
+            max_environment_participants=self._max_environment_participants,
+            persona_profiles=self._persona_profiles,
+            owner=self,
+        )
+        self._fact_manager_component = FactManager(
+            state=self._runtime_state,
+            llm=self._llm,
+            knowledge_store=self._knowledge_store,
+            tracer=self._tracer,
+            facts_config=facts,
+            context_builder=self._context_builder_component,
+            autonomy_manager=self._autonomy_manager_component,
+            owner=self,
+        )
+        self._episode_manager_component = EpisodeManager(
+            state=self._runtime_state,
+            llm=self._llm,
+            rolling_buffer=self._rolling_buffer,
+            experience_store=self._experience_store,
+            tracer=self._tracer,
+            episode_config=episode,
+            experience_vector_index=self._experience_vector_index,
+            compressor=self._episode_compressor,
+        )
 
     def snapshot_state(self) -> Dict[str, Any]:
         return {
@@ -201,6 +251,12 @@ class MessagePipeline:
         if latest_ts > 0:
             self._last_inbound_ts = latest_ts
             self._last_response_ts = latest_ts
+        self._runtime_state.environment = self._environment
+        self._runtime_state.participant_hints = self._participant_hints
+        self._runtime_state.display_names_by_id = self._display_names_by_id
+        self._runtime_state.persona = self._persona
+        self._runtime_state.user_id = self._user_id
+        self._runtime_state.llm_chat_enabled = self._llm_chat_enabled
 
     def _snapshot_facts_state(self) -> Dict[str, Any]:
         pending_messages = [self._serialize_inbound_chat_state(msg) for msg in self._facts_pending_messages]
@@ -320,16 +376,20 @@ class MessagePipeline:
             avatar_position=data.get("avatar_position", ""),
             is_sitting=is_sitting,
         )
+        self._runtime_state.environment = self._environment
         self._tracer.log_event("environment_update", {"agents": len(self._environment.agents)})
 
     def set_persona(self, persona: str) -> None:
         self._persona = persona
+        self._runtime_state.persona = persona
 
     def set_user_id(self, user_id: str) -> None:
         self._user_id = user_id
+        self._runtime_state.user_id = user_id
 
     def set_llm_chat_enabled(self, enabled: bool) -> None:
         self._llm_chat_enabled = bool(enabled)
+        self._runtime_state.llm_chat_enabled = self._llm_chat_enabled
 
     def llm_chat_enabled(self) -> bool:
         return self._llm_chat_enabled
@@ -338,7 +398,7 @@ class MessagePipeline:
         return await self.process_chat_batch([data])
 
     async def process_chat_batch(self, batch: List[Dict[str, Any]]) -> List[Any]:
-        chats = [self._build_chat(item) for item in batch]
+        chats = [self._context_builder_component.build_chat(item) for item in batch]
         non_self_chats: List[InboundChat] = []
         for chat in chats:
             if self._is_self_message(chat):
@@ -351,14 +411,14 @@ class MessagePipeline:
 
         self._last_inbound_ts = time.time()
 
-        participants = self._merge_participants(non_self_chats)
+        participants = self._context_builder_component.merge_participants(non_self_chats)
         if not self._llm_chat_enabled:
             # Low-cost ingest mode: store chat into memory/experience buffers without running
             # addressed-to-me classification or bundle/state generation.
             for chat in non_self_chats:
                 self._rolling_buffer.add_user_message(chat)
                 self._memory.add_message(chat)
-            self._maybe_schedule_fact_sweep(non_self_chats, [], participants)
+            self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, [], participants)
             # Ensure deferred compression doesn't accumulate unbounded while silent.
             self._memory.compress_overflow()
             self._tracer.log_event("response", {"actions": 0, "batch": len(chats), "chat_output_enabled": False})
@@ -370,7 +430,11 @@ class MessagePipeline:
         overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
 
         primary_chat = non_self_chats[-1]
-        context = await self._build_context(primary_chat, participants)
+        context = await self._context_builder_component.build_context(
+            primary_chat,
+            participants,
+            agent_state=self._agent_state(),
+        )
 
         # Add messages to history AFTER building context to avoid duplication
         # of the current message in 'recent_messages' vs 'incoming'.
@@ -378,7 +442,7 @@ class MessagePipeline:
             self._rolling_buffer.add_user_message(chat)
             self._memory.add_message(chat)
 
-        self._maybe_schedule_fact_sweep(non_self_chats, overflow_chats, participants)
+        self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, overflow_chats, participants)
 
         addressed = False
         for chat in non_self_chats:
@@ -419,7 +483,7 @@ class MessagePipeline:
             self._schedule_episode_check()
             return []
 
-        incoming_batch = self._collapse_batch(non_self_chats)
+        incoming_batch = self._context_builder_component.collapse_batch(non_self_chats)
         self._tracer.log_event(
             "llm_prompt_bundle",
             self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),
@@ -449,7 +513,7 @@ class MessagePipeline:
             else:
                 self._memory.compress_overflow(overflow)
         if self._facts_enabled and self._facts_mode == "per_message":
-            self._schedule_store_facts(bundle.facts, participants)
+            self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
         self._update_participant_hints(bundle.participant_hints)
         self._update_mood_and_status(bundle, source="chat")
         if bundle.actions or bundle.text:
@@ -906,6 +970,7 @@ class MessagePipeline:
         # Prefer richer full-name strings (e.g., "Display (username)").
         if not prior or len(full_name) >= len(prior):
             self._display_names_by_id[user_id] = full_name
+            self._runtime_state.display_names_by_id = self._display_names_by_id
 
     def _full_name_for(self, user_id: str, fallback_name: str = "") -> str:
         if user_id and user_id in self._display_names_by_id:
@@ -1332,6 +1397,7 @@ class MessagePipeline:
             key = hint.user_id or f"name:{self._name_key(canonical_name)}"
             merged[key] = Participant(user_id=hint.user_id, name=canonical_name)
         self._participant_hints = list(merged.values())[: self._max_environment_participants]
+        self._runtime_state.participant_hints = self._participant_hints
 
     def _is_self_participant(self, user_id: str, name: str) -> bool:
         if user_id and self._user_id and user_id == self._user_id:
@@ -1488,9 +1554,14 @@ class MessagePipeline:
         activity = self.activity_snapshot(recent_activity_window_seconds)
         if activity["seconds_since_activity"] < recent_activity_window_seconds:
             return []
-        participants = self._participants_for_autonomy()
+        participants = self._context_builder_component.participants_for_autonomy()
         query_text = self._autonomy_query_text()
-        context = await self._build_context(None, participants, query_text=query_text)
+        context = await self._context_builder_component.build_context(
+            None,
+            participants,
+            query_text=query_text,
+            agent_state=self._agent_state(),
+        )
         self._tracer.log_event(
             "llm_prompt_autonomy",
             self._bundle_prompt_payload(None, context, None, None, activity=activity, mode="autonomous"),
@@ -1512,7 +1583,7 @@ class MessagePipeline:
         if bundle.actions or chat_texts:
             self._last_response_ts = time.time()
         if self._facts_enabled and self._facts_mode == "per_message":
-            self._schedule_store_facts(bundle.facts, participants)
+            self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
         self._update_participant_hints(bundle.participant_hints)
         self._update_mood_and_status(bundle, source="autonomy")
         self._schedule_episode_check()
