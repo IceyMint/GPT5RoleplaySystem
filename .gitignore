@@ -7,3 +7,4 @@ src/gpt5_roleplay_system/__pycache__/*
 *.wandb
 src/wandb/*
 *.pyc
+src/.episode_state/session_state_tiffanylynn03_default_user.json

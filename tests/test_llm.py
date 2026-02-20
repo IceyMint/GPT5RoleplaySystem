@@ -144,6 +144,32 @@ def test_structured_action_uses_parameters_text_when_content_missing():
     assert parsed.parameters.get("content") == "Mama...?"
 
 
+def test_structured_emote_strips_wrapping_asterisks():
+    if StructuredAction is None or StructuredBundle is None:
+        return
+    action = StructuredAction(type="EMOTE", content="  *looks around with curious eyes*  ")
+    bundle = StructuredBundle(text="", actions=[action])
+    result = _bundle_from_structured(bundle, mode="chat")
+    assert result.actions
+    parsed = result.actions[0]
+    assert parsed.command_type.value == "EMOTE"
+    assert parsed.content == "looks around with curious eyes"
+    assert parsed.parameters.get("content") == "looks around with curious eyes"
+
+
+def test_structured_emote_fallback_text_strips_wrapping_asterisks():
+    if StructuredAction is None or StructuredBundle is None:
+        return
+    action = StructuredAction(type="EMOTE", parameters={"text": " *hops excitedly* "})
+    bundle = StructuredBundle(text="", actions=[action])
+    result = _bundle_from_structured(bundle, mode="chat")
+    assert result.actions
+    parsed = result.actions[0]
+    assert parsed.command_type.value == "EMOTE"
+    assert parsed.content == "hops excitedly"
+    assert parsed.parameters.get("content") == "hops excitedly"
+
+
 def test_system_prompt_includes_persona_instructions():
     env = EnvironmentSnapshot()
     context = ConversationContext(
@@ -163,6 +189,14 @@ def test_system_prompt_includes_persona_instructions():
     prompt = client._system_prompt_for_context(context)
     assert "Persona name: isabella.elara." in prompt
     assert "You are Isabella, a friendly cat." in prompt
+
+
+def test_system_prompt_enforces_chat_emote_split_rules():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    prompt = client._system_prompt()
+    assert "CHAT CONTENT: Dialogue only." in prompt
+    assert "EMOTE CONTENT: Emote/action narration only." in prompt
+    assert "do not wrap with surrounding asterisks" in prompt
 
 
 def test_format_context_omits_persona_identity_fields():

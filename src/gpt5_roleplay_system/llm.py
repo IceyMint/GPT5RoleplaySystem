@@ -930,7 +930,11 @@ class OpenRouterLLMClient(LLMClient):
             "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
-            "- DO NOT mix multiple commands into one action item.\n\n"
+            "- DO NOT mix multiple commands into one action item.\n"
+            "- CHAT CONTENT: Dialogue only. Do not include action narration or *asterisk* emote markup in CHAT.\n"
+            "- EMOTE CONTENT: Emote/action narration only. Do not include spoken dialogue in EMOTE.\n"
+            "- EMOTE STYLE: For EMOTE content, write plain text and do not wrap with surrounding asterisks.\n"
+            "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n\n"
             "# MEMORY & KNOWLEDGE\n"
             "- Use 'related_experiences' to inform your behavior based on past events.\n"
             "- Update 'summary_update' if 'overflow_messages' are present to compress older context.\n"
@@ -1024,6 +1028,10 @@ class OpenRouterLLMClient(LLMClient):
             "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
+            "- CHAT CONTENT: Dialogue only. Do not include action narration or *asterisk* emote markup in CHAT.\n"
+            "- EMOTE CONTENT: Emote/action narration only. Do not include spoken dialogue in EMOTE.\n"
+            "- EMOTE STYLE: For EMOTE content, write plain text and do not wrap with surrounding asterisks.\n"
+            "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n"
             "- Include 'autonomy_decision' as one of [act, wait, sleep].\n"
             "- 'act': emit one or more actions.\n"
             "- 'wait': emit no actions and choose a suitable 'next_delay_seconds'.\n"
@@ -1872,6 +1880,20 @@ def _facts_from_structured(parsed: Any) -> List[ExtractedFact]:
     return extracted
 
 
+def _strip_emote_wrapping_asterisks(content: str) -> str:
+    cleaned = content.strip()
+    while len(cleaned) >= 2 and cleaned.startswith("*") and cleaned.endswith("*"):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def _normalize_text_action_content(command_type: CommandType, content: str) -> str:
+    text = str(content or "")
+    if command_type != CommandType.EMOTE:
+        return text
+    return _strip_emote_wrapping_asterisks(text)
+
+
 def _actions_from_structured(action: StructuredAction) -> List[Action]:
     primary = _command_from_structured(action)
     if primary is None:
@@ -1887,9 +1909,10 @@ def _actions_from_structured(action: StructuredAction) -> List[Action]:
         return [primary]
     # If the model mixed command types, emit both so we do not drop intent.
     secondary_params = dict(primary.parameters)
+    secondary_content = _normalize_text_action_content(param_command, primary.content)
     secondary = Action(
         command_type=param_command,
-        content=primary.content,
+        content=secondary_content,
         x=primary.x,
         y=primary.y,
         z=primary.z,
@@ -1897,7 +1920,7 @@ def _actions_from_structured(action: StructuredAction) -> List[Action]:
         parameters=secondary_params,
     )
     if param_command in {CommandType.CHAT, CommandType.EMOTE} and secondary.content:
-        secondary.parameters.setdefault("content", secondary.content)
+        secondary.parameters["content"] = secondary.content
     return [secondary, primary]
 
 
@@ -1919,7 +1942,8 @@ def _command_from_structured(action: StructuredAction) -> Optional[Action]:
         if fallback_content is not None:
             content = str(fallback_content)
     if command_type in {CommandType.CHAT, CommandType.EMOTE} and content:
-        parameters.setdefault("content", content)
+        content = _normalize_text_action_content(command_type, content)
+        parameters["content"] = content
     if command_type in {CommandType.MOVE, CommandType.FACE_TARGET}:
         parameters.setdefault("x", str(getattr(action, "x", 0.0)))
         parameters.setdefault("y", str(getattr(action, "y", 0.0)))

@@ -112,9 +112,10 @@ class ResponseMapper:
         except ValueError:
             return [primary]
         secondary_params = dict(primary.parameters)
+        secondary_content = self._normalize_text_action_content(param_command, primary.content)
         secondary = Action(
             command_type=param_command,
-            content=primary.content,
+            content=secondary_content,
             x=primary.x,
             y=primary.y,
             z=primary.z,
@@ -122,7 +123,7 @@ class ResponseMapper:
             parameters=secondary_params,
         )
         if param_command in {CommandType.CHAT, CommandType.EMOTE} and secondary.content:
-            secondary.parameters.setdefault("content", secondary.content)
+            secondary.parameters["content"] = secondary.content
         return [secondary, primary]
 
     def _command_from_structured(self, action: Any) -> Action | None:
@@ -143,7 +144,8 @@ class ResponseMapper:
             if fallback_content is not None:
                 content = str(fallback_content)
         if command_type in {CommandType.CHAT, CommandType.EMOTE} and content:
-            parameters.setdefault("content", content)
+            content = self._normalize_text_action_content(command_type, content)
+            parameters["content"] = content
         if command_type in {CommandType.MOVE, CommandType.FACE_TARGET}:
             parameters.setdefault("x", str(getattr(action, "x", 0.0)))
             parameters.setdefault("y", str(getattr(action, "y", 0.0)))
@@ -164,6 +166,19 @@ class ResponseMapper:
             if action.command_type == CommandType.CHAT and action.content:
                 return action.content
         return ""
+
+    @staticmethod
+    def _strip_emote_wrapping_asterisks(content: str) -> str:
+        cleaned = content.strip()
+        while len(cleaned) >= 2 and cleaned.startswith("*") and cleaned.endswith("*"):
+            cleaned = cleaned[1:-1].strip()
+        return cleaned
+
+    def _normalize_text_action_content(self, command_type: CommandType, content: str) -> str:
+        text = str(content or "")
+        if command_type != CommandType.EMOTE:
+            return text
+        return self._strip_emote_wrapping_asterisks(text)
 
     @staticmethod
     def _normalize_autonomy_decision(value: Any) -> str | None:
