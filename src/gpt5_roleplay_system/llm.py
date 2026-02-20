@@ -371,7 +371,6 @@ if BaseModel is not None:
 
     class StructuredBundle(BaseModel):
         thought_process: Optional[str] = Field(default=None, description="Internal reasoning only. Discarded after parsing.")
-        text: str = ""
         actions: List[StructuredAction] = Field(default_factory=list)
         participant_hints: List[StructuredParticipantHint] = Field(default_factory=list)
         facts: List[StructuredFact] = Field(default_factory=list)
@@ -819,6 +818,7 @@ class OpenRouterLLMClient(LLMClient):
             "You are a fast classifier. Decide if the message is addressed to the AI persona. "
             "Consider nicknames, phonetic spellings, typos, and direct mentions. "
             "Use conversation context, recent messages, and spatial proximity to judge intent. "
+            "If the incoming message only acknowledges the AI's previous line and adds no new request, question, or topic, treat it as not requiring a reply. "
             "Coordinates (x, y, z) are in meters. "
             "Reply with only 'true' or 'false'."
         )
@@ -922,6 +922,8 @@ class OpenRouterLLMClient(LLMClient):
             "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
+            "- Keep strict persona voice: preserve declared age, language level, and speaking style at all times.\n"
+            "- If a message only closes the previous exchange and adds no new intent, return an empty actions array.\n"
             "- If you have nothing meaningful to add, you may return no actions.\n"
             "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
             "- Use 'CHAT' for dialogue and 'EMOTE' for physical descriptions or internal states expressed outwardly.\n"
@@ -1794,12 +1796,10 @@ class OpenRouterLLMClient(LLMClient):
 
 
 def _bundle_from_structured(parsed: StructuredBundle, mode: str = "chat") -> LLMResponseBundle:
-    text = getattr(parsed, "text", "") or ""
     actions: List[Action] = []
     for action in getattr(parsed, "actions", []) or []:
         actions.extend(_actions_from_structured(action))
-    if not text and actions:
-        text = _first_chat_text(actions)
+    text = _first_chat_text(actions)
 
     facts = _facts_from_structured(parsed)
 

@@ -19,7 +19,6 @@ class StubFactsClient(OpenRouterLLMClient):
     def _request_bundle(self, chat, context, overflow, incoming_batch):
         self.bundle_calls += 1
         return StructuredBundle(
-            text="ok",
             actions=[],
             participant_hints=[],
             facts=[

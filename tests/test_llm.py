@@ -27,7 +27,7 @@ def test_mixed_action_type_emits_both_chat_and_primary():
         z=3.0,
         parameters={"type": "CHAT", "recipient": "Evie"},
     )
-    bundle = StructuredBundle(text="", actions=[action])
+    bundle = StructuredBundle(actions=[action])
     result = _bundle_from_structured(bundle)
     types = [item.command_type.value for item in result.actions]
     assert types[0] == "CHAT"
@@ -40,9 +40,9 @@ def test_mixed_action_type_emits_both_chat_and_primary():
 def test_autonomous_text_only_does_not_emit_chat_action():
     if StructuredBundle is None:
         return
-    bundle = StructuredBundle(text="I'll wait a bit longer.", actions=[])
+    bundle = StructuredBundle(actions=[])
     result = _bundle_from_structured(bundle, mode="autonomous")
-    assert result.text
+    assert result.text == ""
     assert result.actions == []
 
 
@@ -50,7 +50,6 @@ def test_autonomous_bundle_parses_explicit_wait_and_delay():
     if StructuredBundle is None:
         return
     bundle = StructuredBundle(
-        text="",
         actions=[],
         autonomy_decision="wait",
         next_delay_seconds=900.0,
@@ -64,17 +63,16 @@ def test_autonomous_bundle_parses_explicit_wait_and_delay():
 def test_chat_mode_text_only_does_not_emit_chat_action():
     if StructuredBundle is None:
         return
-    bundle = StructuredBundle(text="Hello there.", actions=[])
+    bundle = StructuredBundle(actions=[])
     result = _bundle_from_structured(bundle, mode="chat")
     assert result.actions == []
-    assert result.text == "Hello there."
+    assert result.text == ""
 
 
 def test_chat_mode_preserves_scheduler_override_fields():
     if StructuredBundle is None:
         return
     bundle = StructuredBundle(
-        text="We should rest now.",
         actions=[],
         autonomy_decision="sleep",
         next_delay_seconds=3600.0,
@@ -97,7 +95,7 @@ def test_structured_action_accepts_command_alias():
     if StructuredAction is None or StructuredBundle is None:
         return
     action = StructuredAction.model_validate({"command": "CHAT", "content": "Hi"})
-    bundle = StructuredBundle(text="", actions=[action])
+    bundle = StructuredBundle(actions=[action])
     result = _bundle_from_structured(bundle, mode="chat")
     assert result.actions
     assert result.actions[0].command_type.value == "CHAT"
@@ -108,7 +106,7 @@ def test_structured_action_accepts_action_alias():
     if StructuredAction is None or StructuredBundle is None:
         return
     action = StructuredAction.model_validate({"action": "CHAT", "content": "Hi"})
-    bundle = StructuredBundle(text="", actions=[action])
+    bundle = StructuredBundle(actions=[action])
     result = _bundle_from_structured(bundle, mode="chat")
     assert result.actions
     assert result.actions[0].command_type.value == "CHAT"
@@ -119,7 +117,7 @@ def test_structured_action_parses_face_target():
     if StructuredAction is None or StructuredBundle is None:
         return
     action = StructuredAction(type="FACE_TARGET", target_uuid="target-uuid", x=1.5, y=2.5, z=3.5)
-    bundle = StructuredBundle(text="", actions=[action])
+    bundle = StructuredBundle(actions=[action])
     result = _bundle_from_structured(bundle, mode="chat")
     assert result.actions
     parsed = result.actions[0]
@@ -134,7 +132,7 @@ def test_structured_action_uses_parameters_text_when_content_missing():
     if StructuredAction is None or StructuredBundle is None:
         return
     action = StructuredAction(type="CHAT", parameters={"text": "Mama...?"})
-    bundle = StructuredBundle(text="", actions=[action])
+    bundle = StructuredBundle(actions=[action])
     result = _bundle_from_structured(bundle, mode="chat")
     assert result.actions
     parsed = result.actions[0]
@@ -147,7 +145,7 @@ def test_structured_emote_strips_wrapping_asterisks():
     if StructuredAction is None or StructuredBundle is None:
         return
     action = StructuredAction(type="EMOTE", content="  *looks around with curious eyes*  ")
-    bundle = StructuredBundle(text="", actions=[action])
+    bundle = StructuredBundle(actions=[action])
     result = _bundle_from_structured(bundle, mode="chat")
     assert result.actions
     parsed = result.actions[0]
@@ -160,7 +158,7 @@ def test_structured_emote_fallback_text_strips_wrapping_asterisks():
     if StructuredAction is None or StructuredBundle is None:
         return
     action = StructuredAction(type="EMOTE", parameters={"text": " *hops excitedly* "})
-    bundle = StructuredBundle(text="", actions=[action])
+    bundle = StructuredBundle(actions=[action])
     result = _bundle_from_structured(bundle, mode="chat")
     assert result.actions
     parsed = result.actions[0]
@@ -196,6 +194,14 @@ def test_system_prompt_enforces_chat_emote_split_rules():
     assert "CHAT CONTENT: Dialogue only." in prompt
     assert "EMOTE CONTENT: Emote/action narration only." in prompt
     assert "do not wrap with surrounding asterisks" in prompt
+
+
+def test_system_prompt_includes_closure_progression_rules():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    prompt = client._system_prompt()
+    assert "Keep strict persona voice" in prompt
+    assert "only closes the previous exchange" in prompt
+    assert "return an empty actions array" in prompt
 
 
 def test_format_context_omits_persona_identity_fields():

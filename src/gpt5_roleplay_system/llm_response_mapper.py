@@ -9,12 +9,10 @@ class ResponseMapper:
     def bundle_from_structured(self, parsed: Any, mode: str = "chat"):
         from .llm import LLMResponseBundle, ParticipantHint
 
-        text = getattr(parsed, "text", "") or ""
         actions: list[Action] = []
         for action in getattr(parsed, "actions", []) or []:
             actions.extend(self._actions_from_structured(action))
-        if not text and actions:
-            text = self._first_chat_text(actions)
+        text = self._first_chat_text(actions)
 
         facts = self.facts_from_structured(parsed)
         hints = [
