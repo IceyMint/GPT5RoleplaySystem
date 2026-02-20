@@ -370,6 +370,7 @@ if BaseModel is not None:
         name: str = ""
 
     class StructuredBundle(BaseModel):
+        thought_process: Optional[str] = Field(default=None, description="Internal reasoning only. Discarded after parsing.")
         text: str = ""
         actions: List[StructuredAction] = Field(default_factory=list)
         participant_hints: List[StructuredParticipantHint] = Field(default_factory=list)
@@ -921,7 +922,8 @@ class OpenRouterLLMClient(LLMClient):
             "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
-            "- If you have nothing meaningful to add, you may return empty text and no actions.\n"
+            "- If you have nothing meaningful to add, you may return no actions.\n"
+            "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
             "- Use 'CHAT' for dialogue and 'EMOTE' for physical descriptions or internal states expressed outwardly.\n"
             "- For complex maneuvers (e.g., walking while talking), emit multiple actions in a single response.\n"
             "- When 'incoming_batch' is provided, prioritize the 'latest_text' but use earlier messages for context or corrections.\n\n"
@@ -934,6 +936,7 @@ class OpenRouterLLMClient(LLMClient):
             "- CHAT CONTENT: Dialogue only. Do not include action narration or *asterisk* emote markup in CHAT.\n"
             "- EMOTE CONTENT: Emote/action narration only. Do not include spoken dialogue in EMOTE.\n"
             "- EMOTE STYLE: For EMOTE content, write plain text and do not wrap with surrounding asterisks.\n"
+            "- ACTION CONTENT: Do not include '*' characters anywhere in action content.\n"
             "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n\n"
             "# MEMORY & KNOWLEDGE\n"
             "- Use 'related_experiences' to inform your behavior based on past events.\n"
@@ -1018,7 +1021,8 @@ class OpenRouterLLMClient(LLMClient):
             "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
-            "- It is acceptable to return no actions and empty text if no action is appropriate.\n"
+            "- It is acceptable to return no actions if no action is appropriate.\n"
+            "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
             "- Never output internal monologue, private reasoning, or narration about waiting.\n"
             "- When you 'CHAT', speak outwardly to nearby people or the environment.\n"
             "- Do not refer to yourself in the third person.\n"
@@ -1031,6 +1035,7 @@ class OpenRouterLLMClient(LLMClient):
             "- CHAT CONTENT: Dialogue only. Do not include action narration or *asterisk* emote markup in CHAT.\n"
             "- EMOTE CONTENT: Emote/action narration only. Do not include spoken dialogue in EMOTE.\n"
             "- EMOTE STYLE: For EMOTE content, write plain text and do not wrap with surrounding asterisks.\n"
+            "- ACTION CONTENT: Do not include '*' characters anywhere in action content.\n"
             "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n"
             "- Include 'autonomy_decision' as one of [act, wait, sleep].\n"
             "- 'act': emit one or more actions.\n"
@@ -1793,8 +1798,6 @@ def _bundle_from_structured(parsed: StructuredBundle, mode: str = "chat") -> LLM
     actions: List[Action] = []
     for action in getattr(parsed, "actions", []) or []:
         actions.extend(_actions_from_structured(action))
-    if mode != "autonomous" and not actions and text:
-        actions = [Action(command_type=CommandType.CHAT, content=text, parameters={"content": text})]
     if not text and actions:
         text = _first_chat_text(actions)
 

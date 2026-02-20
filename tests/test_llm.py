@@ -61,14 +61,13 @@ def test_autonomous_bundle_parses_explicit_wait_and_delay():
     assert result.actions == []
 
 
-def test_chat_mode_text_only_emits_chat_action():
+def test_chat_mode_text_only_does_not_emit_chat_action():
     if StructuredBundle is None:
         return
     bundle = StructuredBundle(text="Hello there.", actions=[])
     result = _bundle_from_structured(bundle, mode="chat")
-    assert result.actions
-    assert result.actions[0].command_type.value == "CHAT"
-    assert result.actions[0].content == "Hello there."
+    assert result.actions == []
+    assert result.text == "Hello there."
 
 
 def test_chat_mode_preserves_scheduler_override_fields():

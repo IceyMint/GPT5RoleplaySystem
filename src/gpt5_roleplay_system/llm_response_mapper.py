@@ -13,8 +13,6 @@ class ResponseMapper:
         actions: list[Action] = []
         for action in getattr(parsed, "actions", []) or []:
             actions.extend(self._actions_from_structured(action))
-        if mode != "autonomous" and not actions and text:
-            actions = [Action(command_type=CommandType.CHAT, content=text, parameters={"content": text})]
         if not text and actions:
             text = self._first_chat_text(actions)
 
