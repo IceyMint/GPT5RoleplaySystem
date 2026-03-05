@@ -6,6 +6,7 @@ from gpt5_roleplay_system.llm import (
     PromptCacheStats,
     StructuredAction,
     StructuredBundle,
+    StructuredFactsOnly,
     StructuredStateUpdate,
     _clean_json,
     _bundle_from_structured,
@@ -204,6 +205,20 @@ def test_system_prompt_includes_closure_progression_rules():
     assert "return an empty actions array" in prompt
 
 
+def test_system_prompt_marks_previously_as_historical_context():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    prompt = client._system_prompt()
+    assert "Treat 'previously' as historical recap" in prompt
+    assert "summary_meta.range_age_seconds" in prompt
+
+
+def test_autonomous_system_prompt_marks_previously_as_historical_context():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    prompt = client._autonomous_system_prompt()
+    assert "Treat 'previously' as historical recap" in prompt
+    assert "avoid acting on 'previously' alone" in prompt
+
+
 def test_format_context_omits_persona_identity_fields():
     env = EnvironmentSnapshot(location="Test Zone")
     context = ConversationContext(
@@ -258,6 +273,51 @@ def test_format_autonomous_context_omits_persona_identity_fields():
     assert "persona" not in payload
     assert "persona_instructions" not in payload
     assert payload["user_id"] == "ai-uuid"
+
+
+def test_format_context_uses_source_inputs_without_contract_repair():
+    env = EnvironmentSnapshot(location="Test Zone")
+    context = ConversationContext(
+        persona="isabella.elara",
+        user_id="default_user",
+        environment=env,
+        participants=[
+            Participant(user_id="", name="Evie"),
+            Participant(user_id="user-2", name="Evie"),
+        ],
+        people_facts={},
+        recent_messages=[],
+        summary="",
+        related_experiences=[],
+        summary_meta={},
+        agent_state={},
+        persona_instructions="",
+    )
+    chat = InboundChat(text="stale incoming", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+
+    incoming_batch = [
+        {
+            "sender_id": "user-3",
+            "sender_name": "Alice",
+            "latest_text": "latest",
+            "last_timestamp": 3.0,
+            "arrival_order": 1,
+        },
+        {
+            "sender_id": "user-2",
+            "sender_name": "Evie",
+            "latest_text": "older",
+            "last_timestamp": 2.0,
+            "arrival_order": 0,
+        },
+    ]
+    payload = json.loads(client._format_context(chat, context, None, incoming_batch))
+    participant_ids = {entry.get("user_id") for entry in payload["participants"]}
+    assert "" in participant_ids
+    assert "user-2" in participant_ids
+    assert payload["incoming"]["sender_id"] == "user-1"
+    assert payload["incoming"]["text"] == "stale incoming"
 
 
 def test_format_facts_context_includes_only_relevant_people():
@@ -403,12 +463,114 @@ def test_summarize_uses_summary_model():
 
     client = CaptureClient()
     messages = [InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})]
-    result = asyncio.run(client.summarize("old summary", messages))
+    result = asyncio.run(client.summarize_overflow("old summary", messages))
 
     assert result == "summary result"
     assert client.captured["model"] == "google/gemini-3-flash-preview"
     assert client.captured["max_tokens"] == 111
     assert client.captured["temperature"] == 0.5
+
+
+def test_summarize_payload_includes_existing_summary_and_timestamps():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._api_key = "test-key"
+            self._summary_model = "summary-model"
+            self._max_tokens = 111
+            self._temperature = 0.5
+            self.captured = {}
+
+        def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
+            self.captured = {
+                "model": model,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            return "summary result"
+
+    client = CaptureClient()
+    messages = [
+        InboundChat(text="second event", sender_id="user-2", sender_name="User Two", timestamp=120.0, raw={}),
+        InboundChat(text="first event", sender_id="user-1", sender_name="User One", timestamp=100.0, raw={}),
+    ]
+    asyncio.run(client.summarize_overflow("old summary", messages))
+
+    payload = json.loads(client.captured["user_prompt"])
+    assert payload["existing_summary"] == "old summary"
+    assert payload["existing_summary_is_historical"] is True
+    assert payload["new_messages_time_range"]["start"] != "0"
+    assert payload["new_messages_time_range"]["end"] != "0"
+    assert payload["messages"][0]["timestamp_unix"] == 100.0
+    assert payload["messages"][0]["sender_id"] == "user-1"
+    assert payload["messages"][1]["timestamp_unix"] == 120.0
+    assert payload["messages"][1]["sender_id"] == "user-2"
+    assert "Most recent confirmed (as of <timestamp>)" in client.captured["system_prompt"]
+
+
+def test_summarize_skips_when_messages_are_not_newer_than_summary_as_of():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._api_key = "test-key"
+            self._summary_model = "summary-model"
+            self._max_tokens = 111
+            self._temperature = 0.5
+            self.called = False
+
+        def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
+            self.called = True
+            return "should not be used"
+
+    client = CaptureClient()
+    summary = (
+        "Earlier summary text.\n"
+        "Most recent confirmed (as of 2026-02-20 19:31:00): Tiffy rested on Cayle's lap."
+    )
+    messages = [
+        InboundChat(text="Pway! Pway!", sender_id="user-1", sender_name="Tiffy", timestamp=1771643909.5102942, raw={}),
+        InboundChat(text="One... two... umm...", sender_id="user-1", sender_name="Tiffy", timestamp=1771643915.862496, raw={}),
+    ]
+    result = asyncio.run(client.summarize_overflow(summary, messages))
+
+    assert result == summary
+    assert client.called is False
+
+
+def test_summarize_episode_uses_dedicated_prompt_and_payload():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._api_key = "test-key"
+            self._summary_model = "summary-model"
+            self._max_tokens = 111
+            self._temperature = 0.5
+            self.captured = {}
+
+        def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
+            self.captured = {
+                "model": model,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            return "episode summary result"
+
+    client = CaptureClient()
+    messages = [
+        InboundChat(text="second event", sender_id="user-2", sender_name="User Two", timestamp=120.0, raw={}),
+        InboundChat(text="first event", sender_id="user-1", sender_name="User One", timestamp=100.0, raw={}),
+    ]
+    result = asyncio.run(client.summarize_episode(messages))
+
+    assert result == "episode summary result"
+    payload = json.loads(client.captured["user_prompt"])
+    assert "existing_summary" not in payload
+    assert payload["episode_time_range"]["start"] != "0"
+    assert payload["episode_time_range"]["end"] != "0"
+    assert payload["messages"][0]["timestamp_unix"] == 100.0
+    assert payload["messages"][1]["timestamp_unix"] == 120.0
+    assert "episodic memory summary" in client.captured["system_prompt"]
 
 
 def test_request_bundle_includes_provider_routing_in_extra_body():
@@ -920,6 +1082,62 @@ def test_request_structured_recovers_from_unparsed_markdown_content_parts():
     assert parsed_bundle.actions[0].content == "Mama...?"
 
 
+def test_request_structured_accepts_null_participant_hints():
+    if StructuredBundle is None:
+        return
+
+    class _Message:
+        def __init__(self) -> None:
+            self.parsed = None
+            self.refusal = None
+            self.content = (
+                "{"
+                '"actions":[{"type":"CHAT","content":"Hello"}],'
+                '"participant_hints":null'
+                "}"
+            )
+
+    class _Choice:
+        def __init__(self) -> None:
+            self.message = _Message()
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice()]
+
+    class _Completions:
+        def parse(self, **_kwargs):
+            return _Completion()
+
+    class _Chat:
+        def __init__(self) -> None:
+            self.completions = _Completions()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.chat = _Chat()
+
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client()
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    parsed = client._request_structured(
+        StructuredBundle,
+        {
+            "model": "z-ai/glm-5",
+            "messages": [],
+            "response_format": StructuredBundle,
+        },
+    )
+
+    assert parsed is not None
+    assert parsed.participant_hints == []
+    parsed_bundle = _bundle_from_structured(parsed, mode="chat")
+    assert parsed_bundle.actions
+    assert parsed_bundle.actions[0].command_type.value == "CHAT"
+    assert parsed_bundle.actions[0].content == "Hello"
+
+
 def test_request_structured_caches_no_endpoint_parse_failures():
     if StructuredBundle is None:
         return
@@ -982,6 +1200,78 @@ def test_request_structured_caches_no_endpoint_parse_failures():
     assert second is not None
     assert completions.parse_calls == 1
     assert completions.create_calls == 2
+
+
+def test_request_structured_cached_create_normalizes_singular_fact_field():
+    if StructuredFactsOnly is None:
+        return
+
+    class _Message:
+        def __init__(self) -> None:
+            self.content = (
+                "```json\n"
+                "{\n"
+                '  "facts": [\n'
+                "    {\n"
+                '      "user_id": "94ca2855-2f7d-4f04-845d-7a3ba76dc615",\n'
+                '      "fact": "Full name is Kei Marie Crowley."\n'
+                "    }\n"
+                "  ]\n"
+                "}\n"
+                "```"
+            )
+
+    class _Choice:
+        def __init__(self) -> None:
+            self.message = _Message()
+
+    class _Completion:
+        def __init__(self) -> None:
+            self.choices = [_Choice()]
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.parse_calls = 0
+            self.create_calls = 0
+
+        def parse(self, **_kwargs):
+            self.parse_calls += 1
+            raise AssertionError("parse() should not be called when fallback cache is primed")
+
+        def create(self, **_kwargs):
+            self.create_calls += 1
+            return _Completion()
+
+    class _Chat:
+        def __init__(self, completions) -> None:
+            self.completions = completions
+
+    class _Client:
+        def __init__(self, completions) -> None:
+            self.chat = _Chat(completions)
+
+    completions = _Completions()
+    client = object.__new__(OpenRouterLLMClient)
+    client._client = _Client(completions)
+    client._record_cache_usage = lambda *_args, **_kwargs: None
+
+    kwargs = {
+        "model": "z-ai/glm-5",
+        "messages": [],
+        "response_format": StructuredFactsOnly,
+        "extra_body": {"provider": {"order": ["siliconflow"], "allow_fallbacks": False}},
+    }
+    client._structured_parse_cache().add(client._structured_parse_key(kwargs))
+
+    parsed = client._request_structured(StructuredFactsOnly, kwargs)
+
+    assert parsed is not None
+    assert parsed.facts
+    assert parsed.facts[0].user_id == "94ca2855-2f7d-4f04-845d-7a3ba76dc615"
+    assert parsed.facts[0].name == ""
+    assert parsed.facts[0].facts == ["Full name is Kei Marie Crowley."]
+    assert completions.parse_calls == 0
+    assert completions.create_calls == 1
 
 
 class _Usage:

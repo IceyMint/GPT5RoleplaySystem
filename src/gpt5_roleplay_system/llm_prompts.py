@@ -67,7 +67,7 @@ class PromptManager:
             "- NO: Temporary states (is hungry, is tired), fleeting locations (is at the bar), or current actions (is walking).\n\n"
             "# GUIDELINES\n"
             "- Only extract facts explicitly stated in 'evidence_messages' or 'incoming'.\n"
-            "- Do not derive facts from 'summary' or 'related_experiences'.\n"
+            "- Do not derive facts from 'previously' or 'related_experiences'.\n"
             "- Use 'people_facts' to avoid duplicates; if a fact already exists or is a close paraphrase, omit it.\n"
             "- Only include facts that are likely to remain true for weeks or months.\n"
             "- If no new durable facts are found, return an empty facts list."
@@ -128,7 +128,7 @@ class PromptManager:
             "participants": participant_names[:8],
             "participants_detail": participant_details[:8],
             "environment": env_block,
-            "summary": summary,
+            "previously": summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta if context else {}),
             "agent_state": self._canonicalize_for_prompt(context.agent_state if context else {}),
             "recent_time_range": recent_time_range,
@@ -165,7 +165,7 @@ class PromptManager:
                 "avatar_position": context.environment.avatar_position,
             },
             "people_facts": self._canonicalize_for_prompt(context.people_facts),
-            "summary": context.summary,
+            "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
             "agent_state": self._canonicalize_for_prompt(context.agent_state),
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
@@ -234,7 +234,7 @@ class PromptManager:
                 "avatar_position": context.environment.avatar_position,
             },
             "people_facts": self._canonicalize_for_prompt(context.people_facts),
-            "summary": context.summary,
+            "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
             "agent_state": self._canonicalize_for_prompt(context.agent_state),
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
@@ -502,7 +502,9 @@ class PromptManager:
             "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n\n"
             "# MEMORY & KNOWLEDGE\n"
             "- Use 'related_experiences' to inform your behavior based on past events.\n"
-            "- Update 'summary_update' if 'overflow_messages' are present to compress older context.\n"
+            "- Treat 'previously' as historical recap, not immediate present state.\n"
+            "- For current reality, prioritize 'incoming', 'recent_messages', 'environment', and explicit timestamps.\n"
+            "- If 'summary_meta.range_age_seconds' is high (for example >1800), treat state claims in 'previously' as stale unless recent evidence confirms them.\n"
             "- Suggest 'participant_hints' for new or important individuals mentioned in the chat.\n"
             "- Optional scheduler override: you may set 'autonomy_decision' ([act, wait, sleep]) and "
             "'next_delay_seconds' to adjust future autonomous cadence after this interaction."
@@ -515,7 +517,6 @@ class PromptManager:
             "You are the roleplay persona described in the input, but you MUST NOT generate any dialogue or actions.\n\n"
             "# TASK\n"
             "- Update mood and status based on the latest interaction.\n"
-            "- If 'overflow_messages' are present, provide a concise 'summary_update' to compress older context.\n"
             "- Optionally provide participant_hints for notable individuals.\n"
             "- Optionally extract durable person facts (names, relationships, long-term preferences).\n"
             "- Optional scheduler override: set 'autonomy_decision' ([act, wait, sleep]) and "
@@ -543,6 +544,9 @@ class PromptManager:
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
             "- It is acceptable to return no actions if no action is appropriate.\n"
+            "- Treat 'previously' as historical recap; do not assume it is still true without recent confirmation.\n"
+            "- Prioritize 'activity', 'recent_messages', and 'environment' for what is true right now.\n"
+            "- If 'summary_meta.range_age_seconds' is high (for example >1800), avoid acting on 'previously' alone.\n"
             "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
             "- Never output internal monologue, private reasoning, or narration about waiting.\n"
             "- When you 'CHAT', speak outwardly to nearby people or the environment.\n"

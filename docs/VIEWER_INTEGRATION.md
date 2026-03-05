@@ -31,6 +31,17 @@ Why it matters:
 
 - Without this handshake, no `chat_response` actions are emitted for normal chat.
 
+### 2.1) Send `set_user_id` early with stable UUID
+
+Viewer requirement:
+
+- Send `{"type":"set_user_id","data":{"user_id":"<avatar-uuid>"}}` immediately after connect.
+
+Why it matters:
+
+- Self-authored payloads are expected to use `sender=<persona>` and `sender_id=<self uuid>`.
+- Delayed UUID setup can keep temporary placeholder IDs in context payloads.
+
 ### 3) `chat_response.parameters` must be parsed
 
 The server uses `parameters` to pass extra command metadata, especially
@@ -66,6 +77,12 @@ In `gatherNearbyAgents(...)`:
 
 - Compare agent UUIDs to `gAgent.getID()`
 - Skip the matching UUID
+
+### 5.1) Posture state is viewer-authoritative
+
+- `environment_update.is_sitting` is the only posture source consumed by the server.
+- Do not rely on chat/emote parsing for posture changes.
+- Include a timestamp in `environment_update` when available; out-of-order posture updates are ignored.
 
 ### 6) Support `FACE_TARGET` for avatar body rotation
 

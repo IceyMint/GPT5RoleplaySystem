@@ -34,10 +34,17 @@ from .name_utils import (
     normalize_for_match,
     split_display_and_username,
 )
+from .payload_contract import (
+    canonical_identity_key,
+    is_placeholder_self_id,
+    looks_like_uuid,
+    normalize_participants,
+)
 from .neo4j_store import KnowledgeStore
 from .observability import Tracer
 
 logger = logging.getLogger("gpt5_roleplay_pipeline")
+SUMMARY_BOUNDARY_WARN_EPSILON_SECONDS = 0.001
 
 
 class ExperienceIndexProtocol(Protocol):
@@ -73,6 +80,7 @@ class MessagePipeline:
         routine_summary_limit: int = 2,
         routine_summary_min_count: int = 2,
         max_environment_participants: int = 10,
+        posture_stale_seconds: float = 6.0,
         facts_config: FactsConfig | None = None,
         episode_config: EpisodeConfig | None = None,
         persona_profiles: Dict[str, str] | None = None,
@@ -100,6 +108,7 @@ class MessagePipeline:
         self._routine_summary_min_count = max(2, int(routine_summary_min_count))
         self._routine_candidate_limit = max(self._experience_top_k, self._experience_top_k * 4)
         self._max_environment_participants = max_environment_participants
+        self._posture_stale_seconds = max(0.0, float(posture_stale_seconds))
         self._participant_hints: List[Participant] = []
         self._persona_profiles = {str(k).casefold(): str(v) for k, v in (persona_profiles or {}).items() if k and v}
         # Tracks viewer-provided full names by UUID so we can pass display+username to the LLM.
@@ -149,9 +158,15 @@ class MessagePipeline:
             self._persona,
             self._user_id,
         )
-        self._runtime_state = PipelineRuntimeState(persona=self._persona, user_id=self._user_id)
+        self._runtime_state = PipelineRuntimeState(
+            persona=self._persona,
+            user_id=self._user_id,
+            posture_stale_seconds=self._posture_stale_seconds,
+        )
         self._runtime_state.llm_chat_enabled = self._llm_chat_enabled
         self._runtime_state.environment = self._environment
+        self._runtime_state.posture_known = False
+        self._runtime_state.posture_is_sitting = self._environment.is_sitting
         self._runtime_state.participant_hints = self._participant_hints
         self._runtime_state.display_names_by_id = self._display_names_by_id
         self._autonomy_manager_component = AutonomyManager(self._runtime_state)
@@ -200,6 +215,13 @@ class MessagePipeline:
             "rolling_buffer": self._rolling_buffer.snapshot(),
             "memory": self._memory.snapshot(),
             "facts": self._snapshot_facts_state(),
+            "environment": {
+                "last_environment_update_ts": self._runtime_state.last_environment_update_ts,
+                "last_posture_update_ts": self._runtime_state.last_posture_update_ts,
+                "posture_known": self._runtime_state.posture_known,
+                "posture_is_sitting": self._runtime_state.posture_is_sitting,
+                "posture_stale_seconds": self._posture_stale_seconds,
+            },
             "episode": {
                 "last_episode_ts": self._last_episode_ts,
                 "last_episode_size": self._last_episode_size,
@@ -226,6 +248,29 @@ class MessagePipeline:
         facts_state = state.get("facts", {})
         if isinstance(facts_state, dict):
             self._restore_facts_state(facts_state)
+        environment_state = state.get("environment", {})
+        if isinstance(environment_state, dict):
+            self._runtime_state.last_environment_update_ts = float(
+                environment_state.get("last_environment_update_ts", self._runtime_state.last_environment_update_ts)
+                or self._runtime_state.last_environment_update_ts
+            )
+            self._runtime_state.last_posture_update_ts = float(
+                environment_state.get("last_posture_update_ts", self._runtime_state.last_posture_update_ts)
+                or self._runtime_state.last_posture_update_ts
+            )
+            self._runtime_state.posture_known = bool(
+                environment_state.get("posture_known", self._runtime_state.posture_known)
+            )
+            self._runtime_state.posture_is_sitting = bool(
+                environment_state.get("posture_is_sitting", self._runtime_state.posture_is_sitting)
+            )
+            self._posture_stale_seconds = max(
+                0.0,
+                float(environment_state.get("posture_stale_seconds", self._posture_stale_seconds) or self._posture_stale_seconds),
+            )
+            self._runtime_state.posture_stale_seconds = self._posture_stale_seconds
+            if self._runtime_state.posture_known:
+                self._environment.is_sitting = self._runtime_state.posture_is_sitting
         # Backward-compatible recovery for snapshots saved before facts-state persistence.
         self._recover_pending_facts_from_memory()
         episode_state = state.get("episode", {})
@@ -357,9 +402,9 @@ class MessagePipeline:
         objects = self._normalize_entities(data.get("objects", []))
         raw_is_sitting = data.get("is_sitting", False)
         if isinstance(raw_is_sitting, str):
-            is_sitting = raw_is_sitting.strip().lower() in {"1", "true", "yes", "y", "t"}
+            posture_value = raw_is_sitting.strip().lower() in {"1", "true", "yes", "y", "t"}
         else:
-            is_sitting = bool(raw_is_sitting)
+            posture_value = bool(raw_is_sitting)
         update_ts = float(data.get("timestamp", time.time()) or time.time())
         for agent in agents:
             if not isinstance(agent, dict):
@@ -369,12 +414,25 @@ class MessagePipeline:
             self._record_display_name(user_id, name)
         self._update_last_seen_cache_from_agents(agents, update_ts)
         self._schedule_update_last_seen_from_agents(agents, update_ts)
+        self._runtime_state.last_environment_update_ts = max(
+            float(self._runtime_state.last_environment_update_ts or 0.0),
+            update_ts,
+        )
+        if update_ts >= float(self._runtime_state.last_posture_update_ts or 0.0):
+            self._runtime_state.last_posture_update_ts = update_ts
+            self._runtime_state.posture_known = True
+            self._runtime_state.posture_is_sitting = posture_value
+        is_sitting_last_known = (
+            self._runtime_state.posture_is_sitting
+            if self._runtime_state.posture_known
+            else bool(self._environment.is_sitting)
+        )
         self._environment = EnvironmentSnapshot(
             agents=agents,
             objects=objects,
             location=data.get("location", ""),
             avatar_position=data.get("avatar_position", ""),
-            is_sitting=is_sitting,
+            is_sitting=is_sitting_last_known,
         )
         self._runtime_state.environment = self._environment
         self._tracer.log_event("environment_update", {"agents": len(self._environment.agents)})
@@ -411,7 +469,8 @@ class MessagePipeline:
 
         self._last_inbound_ts = time.time()
 
-        participants = self._context_builder_component.merge_participants(non_self_chats)
+        seed_participants = self._context_builder_component.merge_participants(non_self_chats)
+        participants = self._normalize_participants(seed_participants)
         if not self._llm_chat_enabled:
             # Low-cost ingest mode: store chat into memory/experience buffers without running
             # addressed-to-me classification or bundle/state generation.
@@ -421,6 +480,7 @@ class MessagePipeline:
             self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, [], participants)
             # Ensure deferred compression doesn't accumulate unbounded while silent.
             self._memory.compress_overflow()
+            self._enforce_summary_before_recent(reason="chat_disabled")
             self._tracer.log_event("response", {"actions": 0, "batch": len(chats), "chat_output_enabled": False})
             self._schedule_episode_check()
             return []
@@ -428,8 +488,15 @@ class MessagePipeline:
         overflow = self._memory.drain_overflow()
         overflow_chats = self._memory_items_to_chats(overflow)
         overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
+        recent_chats = self._memory_items_to_chats(self._memory.recent())
+        participants = self._normalize_participants(
+            self._participants_from_messages(
+                recent_chats + overflow_chats + non_self_chats,
+                participants,
+            )
+        )
 
-        primary_chat = non_self_chats[-1]
+        primary_chat = self._select_primary_incoming_chat(non_self_chats)
         context = await self._context_builder_component.build_context(
             primary_chat,
             participants,
@@ -473,21 +540,21 @@ class MessagePipeline:
         if not addressed:
             if overflow:
                 if self._summary_strategy == "llm":
-                    summary_text = await self._llm.summarize(self._memory.summary(), overflow_chats)
+                    summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
                     if summary_text:
                         self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
                     else:
-                        self._memory.compress_overflow(overflow)
+                        self._memory.requeue_overflow(overflow)
                 else:
                     self._memory.compress_overflow(overflow)
+            self._enforce_summary_before_recent(reason="not_addressed")
             self._schedule_episode_check()
             return []
 
         incoming_batch = self._context_builder_component.collapse_batch(non_self_chats)
-        self._tracer.log_event(
-            "llm_prompt_bundle",
-            self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch),
-        )
+        prompt_payload = self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch)
+        self._tracer.log_event("llm_prompt_bundle", prompt_payload)
+        self._check_payload_contract(mode="chat", payload=prompt_payload)
         bundle = await self._llm.generate_bundle(primary_chat, context, overflow_chats, incoming_batch)
         override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
             bundle.autonomy_decision,
@@ -501,17 +568,16 @@ class MessagePipeline:
         if bundle.text:
             self._rolling_buffer.add_ai_message(bundle.text, self._persona)
             self._memory.add_ai_message(bundle.text, self._persona)
-        if bundle.summary:
-            self._memory.apply_summary(bundle.summary, timestamps=overflow_timestamps)
-        elif overflow:
+        if overflow:
             if self._summary_strategy == "llm":
-                summary_text = await self._llm.summarize(self._memory.summary(), overflow_chats)
+                summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
                 if summary_text:
                     self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
                 else:
-                    self._memory.compress_overflow(overflow)
+                    self._memory.requeue_overflow(overflow)
             else:
                 self._memory.compress_overflow(overflow)
+        self._enforce_summary_before_recent(reason="after_response")
         if self._facts_enabled and self._facts_mode == "per_message":
             self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
         self._update_participant_hints(bundle.participant_hints)
@@ -592,7 +658,7 @@ class MessagePipeline:
             for participant in self._resolve_participants(chat):
                 key = participant.user_id or f"name:{self._name_key(participant.name)}"
                 merged[key] = participant
-        return list(merged.values())
+        return self._normalize_participants(list(merged.values()))
 
     async def _build_context(
         self,
@@ -748,7 +814,7 @@ class MessagePipeline:
 
     def _collapse_batch(self, chats: List[InboundChat]) -> List[Dict[str, Any]]:
         groups: Dict[str, Dict[str, Any]] = {}
-        for chat in chats:
+        for index, chat in enumerate(chats):
             key = chat.sender_id or chat.sender_name
             if not key:
                 key = f"anon:{len(groups)}"
@@ -769,18 +835,29 @@ class MessagePipeline:
                     "latest_text": "",
                     "first_timestamp": chat.timestamp,
                     "last_timestamp": chat.timestamp,
+                    "arrival_order": index,
                 }
                 groups[key] = entry
             entry["texts"].append(chat.text)
             entry["timestamps"].append(chat.timestamp)
             entry["latest_text"] = chat.text
             entry["last_timestamp"] = chat.timestamp
-        return list(groups.values())
+            entry["arrival_order"] = index
+        collapsed = list(groups.values())
+        collapsed.sort(
+            key=lambda entry: (
+                float(entry.get("last_timestamp", 0.0) or 0.0),
+                int(entry.get("arrival_order", 0) or 0),
+                str(canonical_identity_key(str(entry.get("sender_id", "") or ""), str(entry.get("sender_name", "") or ""))),
+            )
+        )
+        return collapsed
 
     def _handle_self_message(self, chat: InboundChat) -> None:
         text = chat.text.strip()
         if not text:
             return
+        self._maybe_promote_self_user_id(chat)
         if self._is_duplicate_ai_text(text):
             return
         self._rolling_buffer.add_ai_message(text, self._persona)
@@ -845,6 +922,23 @@ class MessagePipeline:
             seen.add(key)
             deduped.append(value)
         return deduped
+
+    def _maybe_promote_self_user_id(self, chat: InboundChat) -> None:
+        sender_id = str(chat.sender_id or "").strip()
+        if not sender_id or not looks_like_uuid(sender_id):
+            return
+        if looks_like_uuid(self._user_id):
+            return
+        if not is_placeholder_self_id(self._user_id):
+            return
+        self._user_id = sender_id
+        self._runtime_state.user_id = sender_id
+
+    def _self_sender_id_for_payload(self) -> str:
+        user_id = str(self._user_id or "").strip()
+        if looks_like_uuid(user_id):
+            return user_id
+        return user_id
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -990,6 +1084,89 @@ class MessagePipeline:
             "full_name": full_name,
         }
 
+    def _normalize_participants(self, participants: List[Participant]) -> List[Participant]:
+        raw = [self._participant_payload(participant) for participant in participants]
+        normalized_payload, _ = normalize_participants(raw)
+        normalized: List[Participant] = []
+        for entry in normalized_payload:
+            user_id = str(entry.get("user_id", "") or "")
+            name = str(entry.get("name", "") or "")
+            full_name = str(entry.get("full_name", "") or "")
+            if user_id and full_name:
+                self._record_display_name(user_id, full_name)
+            normalized.append(Participant(user_id=user_id, name=name))
+        return normalized
+
+    @staticmethod
+    def _select_primary_incoming_chat(chats: List[InboundChat]) -> InboundChat:
+        if not chats:
+            raise ValueError("at least one non-self chat is required")
+        ranked = sorted(
+            enumerate(chats),
+            key=lambda item: (
+                float(item[1].timestamp or 0.0),
+                int(item[0]),
+                str(canonical_identity_key(item[1].sender_id, item[1].sender_name)),
+            ),
+        )
+        return ranked[-1][1]
+
+    def _enforce_summary_before_recent(self, *, reason: str) -> None:
+        recent = self._memory.recent()
+        recent_timestamps = [float(item.timestamp or 0.0) for item in recent if float(item.timestamp or 0.0) > 0.0]
+        if not recent_timestamps:
+            return
+        oldest_recent_ts = min(recent_timestamps)
+        summary_meta = self._memory.summary_meta()
+        summary_end_ts = float(summary_meta.get("range_end_ts", 0.0) or 0.0)
+        if summary_end_ts <= 0.0:
+            return
+        delta_seconds = summary_end_ts - oldest_recent_ts
+        if delta_seconds <= 0.0:
+            return
+        clamped = self._memory.clamp_summary_range_end(oldest_recent_ts)
+        if not clamped:
+            return
+        if delta_seconds <= SUMMARY_BOUNDARY_WARN_EPSILON_SECONDS:
+            return
+        logger.warning(
+            "Summary boundary violation repaired (%s): range_end_ts=%s > oldest_recent_ts=%s (delta=%.6fs)",
+            reason,
+            format_pacific_time(summary_end_ts),
+            format_pacific_time(oldest_recent_ts),
+            delta_seconds,
+        )
+        self._tracer.log_event(
+            "summary_boundary_violation",
+            {
+                "reason": reason,
+                "summary_range_end_before": format_pacific_time(summary_end_ts),
+                "summary_range_end_after": format_pacific_time(oldest_recent_ts),
+                "oldest_recent_ts": format_pacific_time(oldest_recent_ts),
+                "delta_seconds": delta_seconds,
+            },
+        )
+
+    def _check_payload_contract(self, *, mode: str, payload: Dict[str, Any]) -> None:
+        from .payload_contract import normalize_and_validate_payload
+
+        _normalized, warnings = normalize_and_validate_payload(payload)
+        if not warnings:
+            return
+        counts: Dict[str, int] = {}
+        for warning in warnings:
+            category = str(warning.get("category", "") or "unknown")
+            counts[category] = counts.get(category, 0) + 1
+        self._tracer.log_event(
+            "payload_contract_warning",
+            {
+                "mode": mode,
+                "total": len(warnings),
+                "counts": counts,
+                "warnings": warnings[:20],
+            },
+        )
+
     def _update_last_seen_cache_from_agents(self, agents: List[Dict[str, Any]], timestamp: float) -> None:
         ts = float(timestamp or 0.0)
         if ts <= 0:
@@ -1036,7 +1213,7 @@ class MessagePipeline:
         for item in items:
             sender_id = str(item.sender_id or "")
             is_ai_marker = sender_id == "ai"
-            sender_id_out = (self._user_id or "") if is_ai_marker else sender_id
+            sender_id_out = self._self_sender_id_for_payload() if is_ai_marker else sender_id
             sender_name_out = self._persona if is_ai_marker else (sender_id or str(item.sender_name or ""))
             raw_payload: Dict[str, Any] = {}
             if is_ai_marker:
@@ -1063,7 +1240,7 @@ class MessagePipeline:
         timestamp = float(getattr(chat, "timestamp", 0.0) or 0.0)
         if sender_id == "ai":
             persona = str(self._persona or "")
-            sender_id_out = str(self._user_id or "")
+            sender_id_out = self._self_sender_id_for_payload()
             return {
                 "sender": persona,
                 "sender_id": sender_id_out,
@@ -1093,8 +1270,9 @@ class MessagePipeline:
         }
 
     def _participant_key(self, user_id: str, name: str) -> str:
-        if user_id:
-            return f"id:{user_id}"
+        key = canonical_identity_key(user_id, name)
+        if key:
+            return key
         return f"name:{self._name_key(name)}"
 
     def _participants_from_messages(
@@ -1123,7 +1301,7 @@ class MessagePipeline:
                 continue
             key = self._participant_key(participant.user_id, participant.name)
             merged[key] = participant
-        return list(merged.values())
+        return self._normalize_participants(list(merged.values()))
 
     def _facts_context(self, participants: List[Participant], evidence_messages: List[InboundChat]) -> ConversationContext:
         evidence = list(evidence_messages)[-self._facts_evidence_max_messages :]
@@ -1396,7 +1574,7 @@ class MessagePipeline:
             canonical_name = self._canonical_name(hint.user_id, hint.name)
             key = hint.user_id or f"name:{self._name_key(canonical_name)}"
             merged[key] = Participant(user_id=hint.user_id, name=canonical_name)
-        self._participant_hints = list(merged.values())[: self._max_environment_participants]
+        self._participant_hints = self._normalize_participants(list(merged.values()))[: self._max_environment_participants]
         self._runtime_state.participant_hints = self._participant_hints
 
     def _is_self_participant(self, user_id: str, name: str) -> bool:
@@ -1433,6 +1611,17 @@ class MessagePipeline:
         hint = self._autonomy_delay_hint_seconds
         self._autonomy_delay_hint_seconds = None
         return hint
+
+    def _effective_posture_is_sitting(self, now_ts: float | None = None) -> bool | None:
+        if not self._runtime_state.posture_known:
+            return None
+        current = float(now_ts or time.time())
+        last_update = float(self._runtime_state.last_posture_update_ts or 0.0)
+        if last_update <= 0.0:
+            return None
+        if self._posture_stale_seconds > 0.0 and (current - last_update) > self._posture_stale_seconds:
+            return None
+        return bool(self._runtime_state.posture_is_sitting)
 
     def _agent_state(self, now_ts: float | None = None) -> Dict[str, Any]:
         current = now_ts or time.time()
@@ -1518,6 +1707,7 @@ class MessagePipeline:
             return []
         # Use the persona/username (not the UUID) for self-reference filtering.
         persona_key = self._normalize_name_for_match(self._persona)
+        effective_posture = self._effective_posture_is_sitting()
         participant_keys = {
             self._normalize_name_for_match(participant.user_id or participant.name)
             for participant in participants
@@ -1527,6 +1717,10 @@ class MessagePipeline:
         wait_tokens = ("wait", "waiting", "waited")
         filtered: List[Action] = []
         for action in actions:
+            if action.command_type == CommandType.SIT and effective_posture is True:
+                continue
+            if action.command_type == CommandType.STAND and effective_posture is False:
+                continue
             if action.command_type not in {CommandType.CHAT, CommandType.EMOTE}:
                 filtered.append(action)
                 continue
@@ -1562,10 +1756,9 @@ class MessagePipeline:
             query_text=query_text,
             agent_state=self._agent_state(),
         )
-        self._tracer.log_event(
-            "llm_prompt_autonomy",
-            self._bundle_prompt_payload(None, context, None, None, activity=activity, mode="autonomous"),
-        )
+        prompt_payload = self._bundle_prompt_payload(None, context, None, None, activity=activity, mode="autonomous")
+        self._tracer.log_event("llm_prompt_autonomy", prompt_payload)
+        self._check_payload_contract(mode="autonomous", payload=prompt_payload)
         bundle = await self._llm.generate_autonomous_bundle(context, activity)
         bundle.actions = self._filter_autonomous_actions(bundle.actions, participants)
         decision = self._normalize_autonomy_decision(bundle.autonomy_decision, bool(bundle.actions))
@@ -1657,7 +1850,7 @@ class MessagePipeline:
             user_id = str(agent.get("uuid") or agent.get("target_uuid") or "")
             name = str(agent.get("name") or "")
             add_participant(user_id, name)
-        return list(merged.values())
+        return self._normalize_participants(list(merged.values()))
 
     def _autonomy_query_text(self) -> str:
         summary = self._memory.summary().strip()
@@ -1730,7 +1923,7 @@ class MessagePipeline:
             for item in items
         ]
         try:
-            summary = await self._llm.summarize("", chats)
+            summary = await self._llm.summarize_episode(chats)
         except Exception:
             summary = ""
         if summary:
@@ -1787,21 +1980,45 @@ class MessagePipeline:
         activity: Dict[str, Any] | None = None,
         mode: str = "chat",
     ) -> Dict[str, Any]:
+        now_ts = time.time()
+        participant_inputs = list(context.participants)
+        evidence_messages = list(context.recent_messages)
+        if overflow:
+            evidence_messages.extend(overflow)
+        if chat is not None:
+            evidence_messages.append(chat)
+        participants = self._participants_from_messages(evidence_messages, participant_inputs)
+        participants_payload = [self._participant_payload(p) for p in participants]
+
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
+        recent_start_ts = min(recent_timestamps) if recent_timestamps else 0.0
+        summary_meta = self._summary_meta_for_payload(
+            summary_meta=context.summary_meta,
+            recent_start_ts=recent_start_ts,
+            now_ts=now_ts,
+        )
         recent_time_range = {
-            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
+            "start": format_pacific_time(recent_start_ts) if recent_timestamps else "0",
             "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
+        ordered_incoming_batch = incoming_batch or []
+        incoming_payload = None
+        if ordered_incoming_batch:
+            latest_batch_entry = ordered_incoming_batch[-1]
+            incoming_payload = self._incoming_payload_from_batch_entry(latest_batch_entry)
+        elif chat is not None:
+            incoming_payload = self._chat_payload(chat)
+
         payload: Dict[str, Any] = {
             "mode": mode,
-            "now_timestamp": format_pacific_time(),
+            "now_timestamp": format_pacific_time(now_ts),
             "persona": context.persona,
             "user_id": context.user_id,
-            "participants": [self._participant_payload(p) for p in context.participants],
+            "participants": participants_payload,
             "environment": self._environment_payload(),
             "people_facts": context.people_facts,
-            "summary": context.summary,
-            "summary_meta": context.summary_meta,
+            "previously": context.summary,
+            "summary_meta": summary_meta,
             "agent_state": context.agent_state,
             "persona_instructions": context.persona_instructions,
             "recent_time_range": recent_time_range,
@@ -1809,11 +2026,11 @@ class MessagePipeline:
                 self._chat_payload(m) for m in context.recent_messages
             ],
             "related_experiences": context.related_experiences,
-            "incoming_batch": incoming_batch or [],
+            "incoming_batch": ordered_incoming_batch,
         }
-        if chat is not None:
-            payload["incoming"] = self._chat_payload(chat)
-            incoming_id = str(chat.sender_id or "")
+        if incoming_payload is not None:
+            payload["incoming"] = incoming_payload
+            incoming_id = str(incoming_payload.get("sender_id", "") or "")
             payload["incoming_sender_id"] = incoming_id
             payload["incoming_sender_known"] = bool(incoming_id and incoming_id in context.people_facts)
         if overflow:
@@ -1829,6 +2046,58 @@ class MessagePipeline:
                 "status": activity.get("status"),
             }
         return payload
+
+    @staticmethod
+    def _summary_meta_for_payload(
+        *,
+        summary_meta: Dict[str, Any],
+        recent_start_ts: float,
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        meta = dict(summary_meta or {})
+        range_start = float(meta.get("range_start_ts", 0.0) or 0.0)
+        range_end = float(meta.get("range_end_ts", 0.0) or 0.0)
+        if range_start > 0.0 and range_end > 0.0 and range_start > range_end:
+            range_start, range_end = range_end, range_start
+        if recent_start_ts > 0.0 and range_end > recent_start_ts:
+            range_end = recent_start_ts
+            if range_start > range_end and range_start > 0.0:
+                range_start = range_end
+        meta["range_start_ts"] = float(range_start or 0.0)
+        meta["range_end_ts"] = float(range_end or 0.0)
+        last_updated_ts = float(meta.get("last_updated_ts", 0.0) or 0.0)
+        if last_updated_ts > 0.0:
+            meta["age_seconds"] = max(0.0, now_ts - last_updated_ts)
+        elif "age_seconds" in meta:
+            meta.pop("age_seconds", None)
+        if range_end > 0.0:
+            meta["range_age_seconds"] = max(0.0, now_ts - range_end)
+        elif "range_age_seconds" in meta:
+            meta.pop("range_age_seconds", None)
+        return meta
+
+    @staticmethod
+    def _incoming_payload_from_batch_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+        sender_id = str(entry.get("sender_id", "") or "")
+        sender_username = str(entry.get("sender_username", "") or "") or str(entry.get("sender_name", "") or "")
+        sender_display_name = str(entry.get("sender_display_name", "") or "") or sender_username
+        sender_full_name = str(entry.get("sender_full_name", "") or "") or sender_display_name or sender_username
+        sender_value = sender_username or sender_display_name or sender_id
+        latest_text = str(entry.get("latest_text", "") or "")
+        if not latest_text:
+            texts = entry.get("texts", [])
+            if isinstance(texts, list) and texts:
+                latest_text = str(texts[-1] or "")
+        timestamp = float(entry.get("last_timestamp", 0.0) or 0.0)
+        return {
+            "sender": sender_value,
+            "sender_id": sender_id,
+            "sender_username": sender_username,
+            "sender_display_name": sender_display_name,
+            "sender_full_name": sender_full_name,
+            "text": latest_text,
+            "timestamp": format_pacific_time(timestamp) if timestamp > 0.0 else "0",
+        }
 
     def _persona_instructions(self) -> str:
         if not self._persona_profiles:

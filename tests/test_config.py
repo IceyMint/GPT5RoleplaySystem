@@ -136,3 +136,17 @@ llm:
     assert config.llm.provider_allow_fallbacks is None
     assert config.llm.facts_provider_order == ["siliconflow"]
     assert config.llm.facts_provider_allow_fallbacks is False
+
+
+def test_load_config_parses_posture_stale_seconds(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+posture_stale_seconds: 8.5
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("GPT5_ROLEPLAY_POSTURE_STALE_SECONDS", raising=False)
+    config = load_config(str(config_path))
+    assert config.posture_stale_seconds == 8.5

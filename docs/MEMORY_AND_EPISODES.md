@@ -29,12 +29,14 @@ Writes:
 - Class: `ConversationMemory`
 - Provides:
   - `recent()` messages
-  - `summary()` compressed history
+  - `summary()` compressed history that is strictly pre-`recent()` context
 
 Compression:
 
 - The controller sets `defer_compression=True`
 - The pipeline drains overflow and compresses it after the LLM call
+- Overflow slicing is timestamp-boundary aware to avoid unstable splits when many
+  messages share the same timestamp.
 
 ## Long-Term Experiences (Episodic)
 

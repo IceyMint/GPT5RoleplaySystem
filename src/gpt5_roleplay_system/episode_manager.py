@@ -155,7 +155,7 @@ class EpisodeManager:
             for item in items
         ]
         try:
-            summary = await self._llm.summarize("", chats)
+            summary = await self._llm.summarize_episode(chats)
         except Exception:
             summary = ""
         if summary:

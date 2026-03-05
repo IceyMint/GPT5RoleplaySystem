@@ -122,6 +122,7 @@ class GPT5RoleplayServer:
             routine_summary_limit=self._config.knowledge.routine_summary_limit,
             routine_summary_min_count=self._config.knowledge.routine_summary_min_count,
             max_environment_participants=self._config.max_environment_participants,
+            posture_stale_seconds=self._config.posture_stale_seconds,
             facts_config=self._config.facts,
             episode_config=self._config.episode,
             persona_profiles=self._config.persona_profiles,

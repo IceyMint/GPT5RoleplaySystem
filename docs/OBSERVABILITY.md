@@ -39,6 +39,11 @@ Most useful events come from the pipeline:
   - payload: sender, addressed (bool)
 - `event/llm_prompt_bundle`
   - payload: full structured prompt context for chat mode
+- `event/payload_contract_warning`
+  - payload: payload contract warnings detected after source payload build (`counts` + warning details)
+  - categories include:
+    `identity_merge`, `participant_coverage`, `summary_range_clamp`,
+    `incoming_repair`, `self_id_missing_uuid`
 - `event/llm_response_bundle`
   - payload: structured model output (text/actions/facts/hints/summary)
 - `event/llm_reasoning_bundle`

@@ -142,6 +142,7 @@ class ServerConfig:
     experience_deduplication: ExperienceDeduplicationConfig = field(default_factory=ExperienceDeduplicationConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)
     max_environment_participants: int = 10
+    posture_stale_seconds: float = 6.0
     persona_profiles: Dict[str, str] = field(default_factory=dict)
 
 

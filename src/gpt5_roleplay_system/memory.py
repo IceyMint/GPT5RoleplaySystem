@@ -76,15 +76,29 @@ class MemoryCompressor:
 
 class SimpleMemoryCompressor(MemoryCompressor):
     def compress(self, existing_summary: str, messages: Iterable[MemoryItem]) -> str:
-        lines = []
-        if existing_summary:
-            lines.append(existing_summary)
+        snippets: List[str] = []
         for message in messages:
-            snippet = message.text.strip().replace("\n", " ")
-            if len(snippet) > 160:
-                snippet = snippet[:157] + "..."
-            lines.append(f"{message.sender_name}: {snippet}")
-        return "\n".join(lines).strip()
+            sender = (message.sender_name or message.sender_id or "Someone").strip() or "Someone"
+            text = " ".join(str(message.text or "").strip().split())
+            if not text:
+                continue
+            if len(text) > 140:
+                text = text[:137] + "..."
+            snippets.append(f"{sender} said \"{text}\".")
+        if not snippets:
+            return existing_summary.strip()
+        beat_limit = 8
+        lead = snippets[0]
+        tail = snippets[1:beat_limit]
+        if tail:
+            narrative = " ".join([lead] + [f"Then {beat[0].lower() + beat[1:]}" for beat in tail if beat])
+        else:
+            narrative = lead
+        if len(snippets) > beat_limit:
+            narrative = f"{narrative} The conversation continued in the same thread."
+        if existing_summary and existing_summary.strip():
+            return f"{existing_summary.strip()}\n\n{narrative}".strip()
+        return narrative.strip()
 
 
 class ConversationMemory:
@@ -133,6 +147,20 @@ class ConversationMemory:
     def summary_meta(self) -> Dict[str, Any]:
         return dict(self._summary_meta)
 
+    def clamp_summary_range_end(self, max_end_ts: float) -> bool:
+        limit = float(max_end_ts or 0.0)
+        if limit <= 0.0:
+            return False
+        range_end = float(self._summary_meta.get("range_end_ts", 0.0) or 0.0)
+        if range_end <= 0.0 or range_end <= limit:
+            return False
+        range_start = float(self._summary_meta.get("range_start_ts", 0.0) or 0.0)
+        if range_start > limit and range_start > 0.0:
+            range_start = limit
+        self._summary_meta["range_start_ts"] = float(range_start or 0.0)
+        self._summary_meta["range_end_ts"] = float(limit)
+        return True
+
     def apply_summary(self, summary: str, timestamps: List[float] | None = None) -> None:
         cleaned = summary.strip()
         if not cleaned:
@@ -146,6 +174,13 @@ class ConversationMemory:
         overflow = self._overflow
         self._overflow = []
         return overflow
+
+    def requeue_overflow(self, items: List[MemoryItem]) -> None:
+        if not items:
+            return
+        # Preserve chronological order by restoring drained items before any
+        # newly accumulated overflow from the current turn.
+        self._overflow = list(items) + self._overflow
 
     def compress_overflow(self, overflow: List[MemoryItem] | None = None) -> None:
         items = overflow if overflow is not None else self._overflow
@@ -176,8 +211,17 @@ class ConversationMemory:
     def _compress_if_needed(self) -> None:
         if len(self._recent) <= self._max_recent:
             return
-        overflow = self._recent[:-self._max_recent]
-        self._recent = self._recent[-self._max_recent :]
+        split_index = len(self._recent) - self._max_recent
+        if split_index <= 0:
+            return
+        boundary_ts = float(self._recent[split_index].timestamp or 0.0)
+        while split_index > 0 and float(self._recent[split_index - 1].timestamp or 0.0) == boundary_ts:
+            split_index -= 1
+        if split_index == 0:
+            # Keep tied timestamps together; allow temporary overage instead of unstable split.
+            return
+        overflow = self._recent[:split_index]
+        self._recent = self._recent[split_index:]
         if self._defer_compression:
             self._overflow.extend(overflow)
         else:

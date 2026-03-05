@@ -6,9 +6,11 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from .time_utils import format_pacific_time
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 try:
     from openai import OpenAI
@@ -16,11 +18,12 @@ except ImportError:  # pragma: no cover - optional dependency
     OpenAI = None
 
 try:
-    from pydantic import AliasChoices, BaseModel, Field
+    from pydantic import AliasChoices, BaseModel, Field, field_validator
 except ImportError:  # pragma: no cover - optional dependency
     BaseModel = None
     Field = None
     AliasChoices = None
+    field_validator = None
 
 from .models import Action, CommandType, ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 from .name_utils import split_display_and_username
@@ -32,6 +35,10 @@ from .llm_transport import OpenRouterTransport
 logger = logging.getLogger("gpt5_roleplay_llm")
 _UUID_LIKE_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    flags=re.IGNORECASE,
+)
+_MOST_RECENT_CONFIRMED_RE = re.compile(
+    r"Most recent confirmed\s*\(as of\s+([^)]+)\)\s*:",
     flags=re.IGNORECASE,
 )
 
@@ -116,6 +123,28 @@ def _coerce_text_content(value: Any) -> str:
         if candidate:
             return candidate
     return ""
+
+
+def _parse_summary_as_of_timestamp(summary: str) -> float:
+    if not summary:
+        return 0.0
+    matches = list(_MOST_RECENT_CONFIRMED_RE.finditer(str(summary)))
+    if not matches:
+        return 0.0
+    raw_value = str(matches[-1].group(1) or "").strip()
+    if not raw_value:
+        return 0.0
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(raw_value)
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+    return float(parsed.timestamp())
 
 
 def _message_content_text(message: Any) -> str:
@@ -362,8 +391,29 @@ if BaseModel is not None:
 
     class StructuredFact(BaseModel):
         user_id: str
-        name: str
-        facts: List[str] = Field(default_factory=list)
+        name: str = Field(
+            default="",
+            validation_alias=AliasChoices("name", "display_name", "full_name", "username"),
+        )
+        facts: List[str] = Field(default_factory=list, validation_alias=AliasChoices("facts", "fact"))
+
+        @field_validator("facts", mode="before")
+        @classmethod
+        def _normalize_facts(cls, value: Any) -> List[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                cleaned = value.strip()
+                return [cleaned] if cleaned else []
+            if isinstance(value, list):
+                normalized: List[str] = []
+                for item in value:
+                    text = str(item or "").strip()
+                    if text:
+                        normalized.append(text)
+                return normalized
+            text = str(value).strip()
+            return [text] if text else []
 
     class StructuredParticipantHint(BaseModel):
         user_id: str = ""
@@ -383,6 +433,11 @@ if BaseModel is not None:
         )
         next_delay_seconds: Optional[float] = None
 
+        @field_validator("participant_hints", mode="before")
+        @classmethod
+        def _normalize_participant_hints(cls, value: Any) -> Any:
+            return [] if value is None else value
+
     class StructuredStateUpdate(BaseModel):
         participant_hints: List[StructuredParticipantHint] = Field(default_factory=list)
         facts: List[StructuredFact] = Field(default_factory=list)
@@ -394,6 +449,11 @@ if BaseModel is not None:
             validation_alias=AliasChoices("autonomy_decision", "decision"),
         )
         next_delay_seconds: Optional[float] = None
+
+        @field_validator("participant_hints", mode="before")
+        @classmethod
+        def _normalize_participant_hints(cls, value: Any) -> Any:
+            return [] if value is None else value
 
     class StructuredFactsOnly(BaseModel):
         facts: List[StructuredFact] = Field(default_factory=list)
@@ -424,7 +484,10 @@ class LLMClient:
     async def extract_facts(self, chat: InboundChat, context: ConversationContext) -> List[ExtractedFact]:
         raise NotImplementedError
 
-    async def summarize(self, summary: str, messages: List[InboundChat]) -> str:
+    async def summarize_overflow(self, summary: str, messages: List[InboundChat]) -> str:
+        raise NotImplementedError
+
+    async def summarize_episode(self, messages: List[InboundChat]) -> str:
         raise NotImplementedError
 
     async def generate_bundle(
@@ -438,7 +501,7 @@ class LLMClient:
         facts = await self.extract_facts(chat, context)
         summary = None
         if overflow:
-            summary = await self.summarize(context.summary, overflow)
+            summary = await self.summarize_overflow(context.summary, overflow)
         return LLMResponseBundle(
             text=response.text,
             actions=response.actions,
@@ -519,8 +582,11 @@ class RuleBasedLLMClient(LLMClient):
     async def extract_facts(self, chat: InboundChat, context: ConversationContext) -> List[ExtractedFact]:
         return []
 
-    async def summarize(self, summary: str, messages: List[InboundChat]) -> str:
+    async def summarize_overflow(self, summary: str, messages: List[InboundChat]) -> str:
         return summary
+
+    async def summarize_episode(self, messages: List[InboundChat]) -> str:
+        return ""
 
     async def generate_bundle(
         self,
@@ -583,8 +649,11 @@ class EchoLLMClient(LLMClient):
     async def extract_facts(self, chat: InboundChat, context: ConversationContext) -> List[ExtractedFact]:
         return []
 
-    async def summarize(self, summary: str, messages: List[InboundChat]) -> str:
+    async def summarize_overflow(self, summary: str, messages: List[InboundChat]) -> str:
         return summary
+
+    async def summarize_episode(self, messages: List[InboundChat]) -> str:
+        return ""
 
     async def generate_bundle(
         self,
@@ -840,16 +909,66 @@ class OpenRouterLLMClient(LLMClient):
         bundle = await self.generate_bundle(chat, context, None)
         return bundle.facts
 
-    async def summarize(self, summary: str, messages: List[InboundChat]) -> str:
+    async def summarize_overflow(self, summary: str, messages: List[InboundChat]) -> str:
         if not self._api_key:
-            return await self._fallback.summarize(summary, messages)
+            return await self._fallback.summarize_overflow(summary, messages)
+
+        ordered_messages = sorted(
+            enumerate(messages),
+            key=lambda item: (
+                float(item[1].timestamp or 0.0) <= 0.0,
+                float(item[1].timestamp or 0.0),
+                int(item[0]),
+            ),
+        )
+
+        summary_as_of_ts = _parse_summary_as_of_timestamp(summary)
+        if summary_as_of_ts > 0.0:
+            filtered_messages = [
+                (idx, msg)
+                for idx, msg in ordered_messages
+                if float(msg.timestamp or 0.0) <= 0.0 or float(msg.timestamp or 0.0) > summary_as_of_ts
+            ]
+            if not filtered_messages:
+                logger.info(
+                    "Skipping summary update: all candidate messages are at/before existing summary as-of (%s).",
+                    format_pacific_time(summary_as_of_ts),
+                )
+                return summary
+            ordered_messages = filtered_messages
+
+        ordered_chats = [msg for _, msg in ordered_messages]
+        message_timestamps = [float(msg.timestamp or 0.0) for msg in ordered_chats if float(msg.timestamp or 0.0) > 0.0]
         content = {
             "existing_summary": summary,
+            "existing_summary_is_historical": True,
+            "new_messages_time_range": {
+                "start": format_pacific_time(min(message_timestamps)) if message_timestamps else "0",
+                "end": format_pacific_time(max(message_timestamps)) if message_timestamps else "0",
+            },
             "messages": [
-                {"sender": msg.sender_name, "text": msg.text} for msg in messages
+                {
+                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
+                    "timestamp_unix": float(msg.timestamp or 0.0),
+                    "sender": msg.sender_name,
+                    "sender_id": msg.sender_id,
+                    "text": msg.text,
+                }
+                for msg in ordered_chats
             ],
         }
-        prompt = "Summarize the conversation for long-term memory, concise and factual."
+        prompt = (
+            "Update the continuity summary by combining 'existing_summary' (older history) and 'messages' (new events). "
+            "Use message timestamps to keep strict chronology and temporal language. "
+            "If newer events supersede earlier states, keep the earlier event as past context and reflect the latest current state. "
+            "Use temporal phrasing such as earlier/later/now when it improves clarity. "
+            "Write a short-story style summary in about 4-8 sentences, clear about who did what and why. "
+            "Preserve unresolved questions, promises, and emotional shifts so later responses can continue naturally. "
+            "End with exactly one line in this format: "
+            "'Most recent confirmed (as of <timestamp>): <state>'. "
+            "Use the latest timestamp from 'messages' when available, otherwise use 'new_messages_time_range.end'. "
+            "Do not invent events."
+        )
         payload = await asyncio.to_thread(
             self._request_text_with_model,
             self._summary_model,
@@ -859,6 +978,53 @@ class OpenRouterLLMClient(LLMClient):
             self._temperature,
         )
         return payload.strip() if payload else summary
+
+    async def summarize_episode(self, messages: List[InboundChat]) -> str:
+        if not self._api_key:
+            return await self._fallback.summarize_episode(messages)
+
+        ordered_messages = sorted(
+            enumerate(messages),
+            key=lambda item: (
+                float(item[1].timestamp or 0.0) <= 0.0,
+                float(item[1].timestamp or 0.0),
+                int(item[0]),
+            ),
+        )
+        ordered_chats = [msg for _, msg in ordered_messages]
+        message_timestamps = [float(msg.timestamp or 0.0) for msg in ordered_chats if float(msg.timestamp or 0.0) > 0.0]
+        content = {
+            "episode_time_range": {
+                "start": format_pacific_time(min(message_timestamps)) if message_timestamps else "0",
+                "end": format_pacific_time(max(message_timestamps)) if message_timestamps else "0",
+            },
+            "messages": [
+                {
+                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
+                    "timestamp_unix": float(msg.timestamp or 0.0),
+                    "sender": msg.sender_name,
+                    "sender_id": msg.sender_id,
+                    "text": msg.text,
+                }
+                for msg in ordered_chats
+            ],
+        }
+        prompt = (
+            "Create an episodic memory summary for long-term retrieval from the provided message sequence. "
+            "Keep strict chronology and focus on concrete events, key participants, important state changes, "
+            "commitments/promises, outcomes, and unresolved threads. "
+            "Keep it factual, compact (about 5-10 sentences), and specific with names. "
+            "Do not invent events."
+        )
+        payload = await asyncio.to_thread(
+            self._request_text_with_model,
+            self._summary_model,
+            prompt,
+            json.dumps(content, ensure_ascii=True),
+            self._max_tokens,
+            self._temperature,
+        )
+        return payload.strip() if payload else ""
 
     async def generate_bundle(
         self,
@@ -942,7 +1108,9 @@ class OpenRouterLLMClient(LLMClient):
             "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n\n"
             "# MEMORY & KNOWLEDGE\n"
             "- Use 'related_experiences' to inform your behavior based on past events.\n"
-            "- Update 'summary_update' if 'overflow_messages' are present to compress older context.\n"
+            "- Treat 'previously' as historical recap, not immediate present state.\n"
+            "- For current reality, prioritize 'incoming', 'recent_messages', 'environment', and explicit timestamps.\n"
+            "- If 'summary_meta.range_age_seconds' is high (for example >1800), treat state claims in 'previously' as stale unless recent evidence confirms them.\n"
             "- Suggest 'participant_hints' for new or important individuals mentioned in the chat.\n"
             "- Optional scheduler override: you may set 'autonomy_decision' ([act, wait, sleep]) and "
             "'next_delay_seconds' to adjust future autonomous cadence after this interaction."
@@ -971,7 +1139,7 @@ class OpenRouterLLMClient(LLMClient):
             "- NO: Temporary states (is hungry, is tired), fleeting locations (is at the bar), or current actions (is walking).\n\n"
             "# GUIDELINES\n"
             "- Only extract facts explicitly stated in 'evidence_messages' or 'incoming'.\n"
-            "- Do not derive facts from 'summary' or 'related_experiences'.\n"
+            "- Do not derive facts from 'previously' or 'related_experiences'.\n"
             "- Use 'people_facts' to avoid duplicates; if a fact already exists or is a close paraphrase, omit it.\n"
             "- Only include facts that are likely to remain true for weeks or months.\n"
             "- If no new durable facts are found, return an empty facts list."
@@ -983,7 +1151,6 @@ class OpenRouterLLMClient(LLMClient):
             "You are the roleplay persona described in the input, but you MUST NOT generate any dialogue or actions.\n\n"
             "# TASK\n"
             "- Update mood and status based on the latest interaction.\n"
-            "- If 'overflow_messages' are present, provide a concise 'summary_update' to compress older context.\n"
             "- Optionally provide participant_hints for notable individuals.\n"
             "- Optionally extract durable person facts (names, relationships, long-term preferences).\n"
             "- Optional scheduler override: set 'autonomy_decision' ([act, wait, sleep]) and "
@@ -1024,6 +1191,9 @@ class OpenRouterLLMClient(LLMClient):
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
             "- It is acceptable to return no actions if no action is appropriate.\n"
+            "- Treat 'previously' as historical recap; do not assume it is still true without recent confirmation.\n"
+            "- Prioritize 'activity', 'recent_messages', and 'environment' for what is true right now.\n"
+            "- If 'summary_meta.range_age_seconds' is high (for example >1800), avoid acting on 'previously' alone.\n"
             "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
             "- Never output internal monologue, private reasoning, or narration about waiting.\n"
             "- When you 'CHAT', speak outwardly to nearby people or the environment.\n"
@@ -1532,7 +1702,7 @@ class OpenRouterLLMClient(LLMClient):
             "participants": participant_names[:8],
             "participants_detail": participant_details[:8],
             "environment": env_block,
-            "summary": summary,
+            "previously": summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta if context else {}),
             "agent_state": self._canonicalize_for_prompt(context.agent_state if context else {}),
             "recent_time_range": recent_time_range,
@@ -1569,7 +1739,7 @@ class OpenRouterLLMClient(LLMClient):
                 "avatar_position": context.environment.avatar_position,
             },
             "people_facts": self._canonicalize_for_prompt(context.people_facts),
-            "summary": context.summary,
+            "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
             "agent_state": self._canonicalize_for_prompt(context.agent_state),
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
@@ -1732,7 +1902,7 @@ class OpenRouterLLMClient(LLMClient):
                 "avatar_position": context.environment.avatar_position,
             },
             "people_facts": self._canonicalize_for_prompt(context.people_facts),
-            "summary": context.summary,
+            "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
             "agent_state": self._canonicalize_for_prompt(context.agent_state),
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),

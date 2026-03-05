@@ -15,6 +15,7 @@ from .name_utils import (
     normalize_for_match,
     split_display_and_username,
 )
+from .payload_contract import canonical_identity_key, normalize_participants
 from .neo4j_store import KnowledgeStore
 from .observability import Tracer
 from .pipeline_state import PipelineRuntimeState
@@ -76,9 +77,9 @@ class ContextBuilder:
         objects = self._normalize_entities(data.get("objects", []))
         raw_is_sitting = data.get("is_sitting", False)
         if isinstance(raw_is_sitting, str):
-            is_sitting = raw_is_sitting.strip().lower() in {"1", "true", "yes", "y", "t"}
+            posture_value = raw_is_sitting.strip().lower() in {"1", "true", "yes", "y", "t"}
         else:
-            is_sitting = bool(raw_is_sitting)
+            posture_value = bool(raw_is_sitting)
         update_ts = float(data.get("timestamp", time.time()) or time.time())
         for agent in agents:
             if not isinstance(agent, dict):
@@ -88,12 +89,18 @@ class ContextBuilder:
             self._record_display_name(user_id, name)
         self._update_last_seen_cache_from_agents(agents, update_ts)
         self._schedule_update_last_seen_from_agents(agents, update_ts)
+        self._state.last_environment_update_ts = max(float(self._state.last_environment_update_ts or 0.0), update_ts)
+        if update_ts >= float(self._state.last_posture_update_ts or 0.0):
+            self._state.last_posture_update_ts = update_ts
+            self._state.posture_known = True
+            self._state.posture_is_sitting = posture_value
+        is_sitting_last_known = self._state.posture_is_sitting if self._state.posture_known else False
         self._state.environment = EnvironmentSnapshot(
             agents=agents,
             objects=objects,
             location=data.get("location", ""),
             avatar_position=data.get("avatar_position", ""),
-            is_sitting=is_sitting,
+            is_sitting=is_sitting_last_known,
         )
         self._tracer.log_event("environment_update", {"agents": len(self._state.environment.agents)})
 
@@ -128,7 +135,7 @@ class ContextBuilder:
             for participant in self._resolve_participants(chat):
                 key = participant.user_id or f"name:{self._name_key(participant.name)}"
                 merged[key] = participant
-        return list(merged.values())
+        return self._normalize_participant_records(list(merged.values()))
 
     def participants_from_messages(
         self,
@@ -155,7 +162,7 @@ class ContextBuilder:
                 continue
             key = self._participant_key(participant.user_id, participant.name)
             merged[key] = participant
-        return list(merged.values())
+        return self._normalize_participant_records(list(merged.values()))
 
     def participants_for_autonomy(self) -> list[Participant]:
         if self._owner is not None and hasattr(self._owner, "_participants_for_autonomy"):
@@ -178,7 +185,7 @@ class ContextBuilder:
             user_id = str(agent.get("uuid") or agent.get("target_uuid") or "")
             name = str(agent.get("name") or "")
             add_participant(user_id, name)
-        return list(merged.values())
+        return self._normalize_participant_records(list(merged.values()))
 
     async def build_context(
         self,
@@ -539,9 +546,23 @@ class ContextBuilder:
         loop.create_task(asyncio.to_thread(self._update_last_seen_from_agents, agents, timestamp))
 
     def _participant_key(self, user_id: str, name: str) -> str:
-        if user_id:
-            return f"id:{user_id}"
+        key = canonical_identity_key(user_id, name)
+        if key:
+            return key
         return f"name:{self._name_key(name)}"
+
+    def _normalize_participant_records(self, participants: list[Participant]) -> list[Participant]:
+        raw = [self.participant_payload(participant) for participant in participants]
+        normalized_payload, _ = normalize_participants(raw)
+        normalized: list[Participant] = []
+        for entry in normalized_payload:
+            user_id = str(entry.get("user_id", "") or "")
+            name = str(entry.get("name", "") or "")
+            full_name = str(entry.get("full_name", "") or "")
+            if user_id and full_name:
+                self._record_display_name(user_id, full_name)
+            normalized.append(Participant(user_id=user_id, name=name))
+        return normalized
 
     def _is_self_participant(self, user_id: str, name: str) -> bool:
         if user_id and self._state.user_id and user_id == self._state.user_id:

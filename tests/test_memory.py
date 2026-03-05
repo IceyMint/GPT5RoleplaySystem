@@ -51,3 +51,36 @@ def test_summary_meta_tracks_overflow_timestamps():
     assert meta.get("range_start_ts") == 100.0
     assert meta.get("range_end_ts") == 100.0
     assert float(meta.get("last_updated_ts", 0.0) or 0.0) > 0.0
+
+
+def test_overflow_slicing_preserves_tied_timestamp_group_deterministically():
+    def run_once() -> tuple[list[str], list[str]]:
+        memory = ConversationMemory(SimpleMemoryCompressor(), max_recent=2, defer_compression=True)
+        memory.add_message(_chat_at("a", 10.0))
+        memory.add_message(_chat_at("b", 10.0))
+        memory.add_message(_chat_at("c", 10.0))
+        # Tie preservation allows temporary overage.
+        assert [item.text for item in memory.recent()] == ["a", "b", "c"]
+        memory.add_message(_chat_at("d", 11.0))
+        memory.add_message(_chat_at("e", 11.0))
+        overflow = [item.text for item in memory.drain_overflow()]
+        recent = [item.text for item in memory.recent()]
+        return overflow, recent
+
+    first_overflow, first_recent = run_once()
+    second_overflow, second_recent = run_once()
+    assert first_overflow == ["a", "b", "c"]
+    assert first_recent == ["d", "e"]
+    assert second_overflow == first_overflow
+    assert second_recent == first_recent
+
+
+def test_requeue_overflow_prepends_drained_items_before_newer_overflow():
+    memory = ConversationMemory(SimpleMemoryCompressor(), max_recent=1, defer_compression=True)
+    memory.add_message(_chat_at("one", 1.0))
+    memory.add_message(_chat_at("two", 2.0))
+    drained = memory.drain_overflow()
+    assert [item.text for item in drained] == ["one"]
+    memory.add_message(_chat_at("three", 3.0))
+    memory.requeue_overflow(drained)
+    assert [item.text for item in memory.drain_overflow()] == ["one", "two"]

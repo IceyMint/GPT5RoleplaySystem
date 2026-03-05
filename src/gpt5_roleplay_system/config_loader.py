@@ -123,6 +123,12 @@ class ConfigLoader:
             experience_deduplication=experience_deduplication_config,
             wandb=wandb_config,
             max_environment_participants=int(self._getenv("GPT5_ROLEPLAY_MAX_PARTICIPANTS", 10)),
+            posture_stale_seconds=float(
+                self._getenv(
+                    "GPT5_ROLEPLAY_POSTURE_STALE_SECONDS",
+                    raw.get("posture_stale_seconds", ServerConfig().posture_stale_seconds),
+                )
+            ),
             persona_profiles=persona_profiles,
         )
 
