@@ -88,6 +88,7 @@ Key config blocks:
   - `neo4j_genai_provider` for Neo4j `genai.vector.encode` (default `OpenAI`)
   - `neo4j_genai_only` to disable fallback embeddings and require Neo4j GenAI
   - `reasoning`: optional reasoning effort forwarded to OpenRouter requests
+  - prompt payloads are ordered from slower-changing session/memory state to live turn data to improve prefix caching
 - `knowledge_storage`
   - `experience_similar_limit`, `experience_score_min`, `experience_score_delta`
   - near-duplicate collapse: `near_duplicate_collapse_enabled`, `near_duplicate_similarity`

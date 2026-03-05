@@ -320,6 +320,126 @@ def test_format_context_uses_source_inputs_without_contract_repair():
     assert payload["incoming"]["text"] == "stale incoming"
 
 
+def test_format_context_pushes_live_turn_fields_to_end_for_prefix_caching():
+    env = EnvironmentSnapshot(location="Test Zone")
+    context = ConversationContext(
+        persona="isabella.elara",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[Participant(user_id="user-2", name="Evie")],
+        people_facts={"user-2": {"facts": ["likes tea"]}},
+        recent_messages=[],
+        summary="Earlier summary",
+        related_experiences=[{"text": "Past event"}],
+        summary_meta={"range_age_seconds": 10},
+        agent_state={"mood": "curious"},
+    )
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+
+    payload = json.loads(client._format_context(chat, context, None, [{"latest_text": "hello"}]))
+
+    assert list(payload.keys()) == [
+        "user_id",
+        "participants",
+        "people_facts",
+        "previously",
+        "summary_meta",
+        "agent_state",
+        "related_experiences",
+        "environment",
+        "recent_time_range",
+        "recent_messages",
+        "overflow_messages",
+        "incoming_batch",
+        "object_proximity",
+        "incoming",
+        "now_timestamp",
+    ]
+
+
+def test_format_autonomous_context_pushes_live_fields_to_end_for_prefix_caching():
+    env = EnvironmentSnapshot(location="Test Zone")
+    context = ConversationContext(
+        persona="isabella.elara",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[Participant(user_id="user-2", name="Evie")],
+        people_facts={"user-2": {"facts": ["likes tea"]}},
+        recent_messages=[],
+        summary="Earlier summary",
+        related_experiences=[{"text": "Past event"}],
+        summary_meta={"range_age_seconds": 10},
+        agent_state={"mood": "curious"},
+    )
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+
+    payload = json.loads(
+        client._format_autonomous_context(
+            context,
+            {
+                "seconds_since_activity": 5.0,
+                "last_inbound_ts": 1.0,
+                "last_response_ts": 2.0,
+                "mood": "calm",
+                "status": "idle",
+            },
+        )
+    )
+
+    assert list(payload.keys()) == [
+        "mode",
+        "user_id",
+        "participants",
+        "people_facts",
+        "previously",
+        "summary_meta",
+        "agent_state",
+        "related_experiences",
+        "environment",
+        "recent_time_range",
+        "recent_messages",
+        "activity",
+        "object_proximity",
+        "now_timestamp",
+    ]
+
+
+def test_format_context_separates_stable_object_catalog_from_dynamic_proximity():
+    env = EnvironmentSnapshot(
+        location="Test Zone",
+        avatar_position="(0,0,0)",
+        objects=[
+            {"uuid": "obj-b", "name": "B", "distance": 1.2, "position": "(1.2,0,0)", "kind": "chair"},
+            {"uuid": "obj-a", "name": "A", "distance": 5.0, "position": "(5,0,0)", "kind": "table"},
+        ],
+    )
+    context = ConversationContext(
+        persona="isabella.elara",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[Participant(user_id="user-2", name="Evie")],
+        people_facts={},
+        recent_messages=[],
+        summary="",
+        related_experiences=[],
+        summary_meta={},
+        agent_state={},
+    )
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+
+    payload = json.loads(client._format_context(chat, context, None, None))
+
+    stable_objects = payload["environment"]["objects"]
+    assert [obj.get("uuid") for obj in stable_objects] == ["obj-a", "obj-b"]
+    assert all("distance" not in obj for obj in stable_objects)
+
+    proximity = payload["object_proximity"]
+    assert [obj.get("object_id") for obj in proximity] == ["obj-b", "obj-a"]
+    assert all("distance_m" in obj for obj in proximity)
+
+
 def test_format_facts_context_includes_only_relevant_people():
     client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     evidence = [
@@ -498,6 +618,12 @@ def test_summarize_payload_includes_existing_summary_and_timestamps():
     asyncio.run(client.summarize_overflow("old summary", messages))
 
     payload = json.loads(client.captured["user_prompt"])
+    assert list(payload.keys()) == [
+        "existing_summary",
+        "existing_summary_is_historical",
+        "new_messages_time_range",
+        "messages",
+    ]
     assert payload["existing_summary"] == "old summary"
     assert payload["existing_summary_is_historical"] is True
     assert payload["new_messages_time_range"]["start"] != "0"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from typing import Any
@@ -20,7 +21,7 @@ class PromptManager:
         persona = (context.persona or "").strip()
         instructions = (context.persona_instructions or "").strip()
         lines = [
-            self._system_prompt(),
+            self.system_prompt(),
             "",
             f"Persona name: {persona}.",
             "You are this persona.",
@@ -34,7 +35,7 @@ class PromptManager:
         persona = (context.persona or "").strip()
         instructions = (context.persona_instructions or "").strip()
         lines = [
-            self._state_system_prompt(),
+            self.state_system_prompt(),
             "",
             f"Persona name: {persona}.",
             "You are this persona.",
@@ -48,7 +49,7 @@ class PromptManager:
         persona = (context.persona or "").strip()
         instructions = (context.persona_instructions or "").strip()
         lines = [
-            self._autonomous_system_prompt(),
+            self.autonomous_system_prompt(),
             "",
             f"Persona name: {persona}.",
             "You are this persona.",
@@ -72,6 +73,42 @@ class PromptManager:
             "- Only include facts that are likely to remain true for weeks or months.\n"
             "- If no new durable facts are found, return an empty facts list."
         ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
+
+    @staticmethod
+    def address_check_system_prompt() -> str:
+        return (
+            "You are a fast classifier. Decide if the message is addressed to the AI persona. "
+            "Consider nicknames, phonetic spellings, typos, and direct mentions. "
+            "Use conversation context, recent messages, and spatial proximity to judge intent. "
+            "If the incoming message only acknowledges the AI's previous line and adds no new request, question, or topic, treat it as not requiring a reply. "
+            "Coordinates (x, y, z) are in meters. "
+            "Reply with only 'true' or 'false'."
+        )
+
+    @staticmethod
+    def continuity_summary_system_prompt() -> str:
+        return (
+            "Update the continuity summary by combining 'existing_summary' (older history) and 'messages' (new events). "
+            "Use message timestamps to keep strict chronology and temporal language. "
+            "If newer events supersede earlier states, keep the earlier event as past context and reflect the latest current state. "
+            "Use temporal phrasing such as earlier/later/now when it improves clarity. "
+            "Write a short-story style summary in about 4-8 sentences, clear about who did what and why. "
+            "Preserve unresolved questions, promises, and emotional shifts so later responses can continue naturally. "
+            "End with exactly one line in this format: "
+            "'Most recent confirmed (as of <timestamp>): <state>'. "
+            "Use the latest timestamp from 'messages' when available, otherwise use 'new_messages_time_range.end'. "
+            "Do not invent events."
+        )
+
+    @staticmethod
+    def episodic_summary_system_prompt() -> str:
+        return (
+            "Create an episodic memory summary for long-term retrieval from the provided message sequence. "
+            "Keep strict chronology and focus on concrete events, key participants, important state changes, "
+            "commitments/promises, outcomes, and unresolved threads. "
+            "Keep it factual, compact (about 5-10 sentences), and specific with names. "
+            "Do not invent events."
+        )
 
     def format_address_check(
         self,
@@ -123,14 +160,16 @@ class PromptManager:
             "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
 
-        payload = {
+        static_payload = {
             "persona": persona,
             "participants": participant_names[:8],
             "participants_detail": participant_details[:8],
-            "environment": env_block,
             "previously": summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta if context else {}),
             "agent_state": self._canonicalize_for_prompt(context.agent_state if context else {}),
+            "environment": env_block,
+        }
+        live_payload = {
             "recent_time_range": recent_time_range,
             "recent_messages": recent_messages,
             "sender_name": chat.sender_name,
@@ -138,6 +177,7 @@ class PromptManager:
             "incoming": self.chat_payload(chat),
             "now_timestamp": format_pacific_time(),
         }
+        payload = self._merge_prompt_sections(static_payload, live_payload)
         return self._serialize_payload(payload)
 
     def format_context(
@@ -154,28 +194,35 @@ class PromptManager:
         }
         participants_payload = self._stable_participants_payload(context.participants)
         now = time.time()
-        payload = {
+        static_payload = {
             "user_id": context.user_id,
             "participants": participants_payload,
-            "environment": {
-                "location": context.environment.location,
-                "is_sitting": context.environment.is_sitting,
-                "objects": self._stable_entity_list(context.environment.objects),
-                "agents": self._stable_entity_list(context.environment.agents),
-                "avatar_position": context.environment.avatar_position,
-            },
             "people_facts": self._canonicalize_for_prompt(context.people_facts),
             "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
             "agent_state": self._canonicalize_for_prompt(context.agent_state),
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
+            "environment": {
+                "location": context.environment.location,
+                "objects": self._stable_objects_catalog_payload(context.environment.objects),
+                "agents": self._stable_entity_list(context.environment.agents),
+                "avatar_position": context.environment.avatar_position,
+                "is_sitting": context.environment.is_sitting,
+            },
+        }
+        live_payload = {
             "recent_time_range": recent_time_range,
             "recent_messages": [self.chat_payload(m) for m in context.recent_messages],
             "overflow_messages": [self.chat_payload(m) for m in (overflow or [])],
             "incoming_batch": self._canonicalize_for_prompt(incoming_batch or []),
+            "object_proximity": self._object_proximity_overlay(
+                context.environment.objects,
+                context.environment.avatar_position,
+            ),
             "incoming": self.chat_payload(chat),
             "now_timestamp": format_pacific_time(now),
         }
+        payload = self._merge_prompt_sections(static_payload, live_payload)
         return self._serialize_payload(payload)
 
     def format_facts_context_from_messages(
@@ -210,6 +257,56 @@ class PromptManager:
         }
         return self._serialize_payload(payload)
 
+    def format_continuity_summary_context(
+        self,
+        summary: str,
+        ordered_chats: list[InboundChat],
+    ) -> str:
+        message_timestamps = [float(msg.timestamp or 0.0) for msg in ordered_chats if float(msg.timestamp or 0.0) > 0.0]
+        static_payload = {
+            "existing_summary": summary,
+            "existing_summary_is_historical": True,
+            "new_messages_time_range": {
+                "start": format_pacific_time(min(message_timestamps)) if message_timestamps else "0",
+                "end": format_pacific_time(max(message_timestamps)) if message_timestamps else "0",
+            },
+        }
+        live_payload = {
+            "messages": [
+                {
+                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
+                    "timestamp_unix": float(msg.timestamp or 0.0),
+                    "sender": msg.sender_name,
+                    "sender_id": msg.sender_id,
+                    "text": msg.text,
+                }
+                for msg in ordered_chats
+            ],
+        }
+        return self._serialize_payload(self._merge_prompt_sections(static_payload, live_payload))
+
+    def format_episode_summary_context(self, ordered_chats: list[InboundChat]) -> str:
+        message_timestamps = [float(msg.timestamp or 0.0) for msg in ordered_chats if float(msg.timestamp or 0.0) > 0.0]
+        static_payload = {
+            "episode_time_range": {
+                "start": format_pacific_time(min(message_timestamps)) if message_timestamps else "0",
+                "end": format_pacific_time(max(message_timestamps)) if message_timestamps else "0",
+            },
+        }
+        live_payload = {
+            "messages": [
+                {
+                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
+                    "timestamp_unix": float(msg.timestamp or 0.0),
+                    "sender": msg.sender_name,
+                    "sender_id": msg.sender_id,
+                    "text": msg.text,
+                }
+                for msg in ordered_chats
+            ],
+        }
+        return self._serialize_payload(self._merge_prompt_sections(static_payload, live_payload))
+
     def format_autonomous_context(
         self,
         context: ConversationContext,
@@ -222,22 +319,24 @@ class PromptManager:
         }
         participants_payload = self._stable_participants_payload(context.participants)
         now = time.time()
-        payload = {
+        static_payload = {
             "mode": "autonomous",
             "user_id": context.user_id,
             "participants": participants_payload,
-            "environment": {
-                "location": context.environment.location,
-                "is_sitting": context.environment.is_sitting,
-                "objects": self._stable_entity_list(context.environment.objects),
-                "agents": self._stable_entity_list(context.environment.agents),
-                "avatar_position": context.environment.avatar_position,
-            },
             "people_facts": self._canonicalize_for_prompt(context.people_facts),
             "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
             "agent_state": self._canonicalize_for_prompt(context.agent_state),
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
+            "environment": {
+                "location": context.environment.location,
+                "objects": self._stable_objects_catalog_payload(context.environment.objects),
+                "agents": self._stable_entity_list(context.environment.agents),
+                "avatar_position": context.environment.avatar_position,
+                "is_sitting": context.environment.is_sitting,
+            },
+        }
+        live_payload = {
             "recent_time_range": recent_time_range,
             "recent_messages": [self.chat_payload(m) for m in context.recent_messages],
             "activity": {
@@ -247,8 +346,13 @@ class PromptManager:
                 "mood": activity.get("mood"),
                 "status": activity.get("status"),
             },
+            "object_proximity": self._object_proximity_overlay(
+                context.environment.objects,
+                context.environment.avatar_position,
+            ),
             "now_timestamp": format_pacific_time(now),
         }
+        payload = self._merge_prompt_sections(static_payload, live_payload)
         return self._serialize_payload(payload)
 
     @staticmethod
@@ -353,6 +457,128 @@ class PromptManager:
             )
 
         return sorted(canonical, key=entity_sort_key)
+
+    @classmethod
+    def _stable_objects_catalog_payload(cls, entries: list[Any]) -> list[Any]:
+        catalog_entries: list[Any] = []
+        for entry in entries:
+            canonical = cls._canonicalize_for_prompt(entry)
+            if not isinstance(canonical, dict):
+                catalog_entries.append(canonical)
+                continue
+            cleaned: dict[Any, Any] = {}
+            for key, value in canonical.items():
+                if cls._is_dynamic_object_key(key):
+                    continue
+                cleaned[key] = value
+            catalog_entries.append(cleaned)
+        return cls._stable_entity_list(catalog_entries)
+
+    @classmethod
+    def _object_proximity_overlay(
+        cls,
+        entries: list[Any],
+        avatar_position: Any,
+        *,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        max_items = max(int(limit), 0)
+        if max_items == 0:
+            return []
+        avatar_xyz = cls._parse_xyz_triplet(avatar_position)
+        candidates: list[tuple[float, str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            object_id = str(entry.get("uuid") or entry.get("target_uuid") or "").strip()
+            object_name = str(entry.get("name") or entry.get("display_name") or "").strip()
+            distance = cls._extract_object_distance(entry, avatar_xyz)
+            if distance is None:
+                continue
+            if distance < 0.0:
+                continue
+            candidates.append((distance, object_id, object_name))
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        payload: list[dict[str, Any]] = []
+        for distance, object_id, object_name in candidates[:max_items]:
+            item: dict[str, Any] = {"distance_m": round(distance, 3)}
+            if object_id:
+                item["object_id"] = object_id
+            if object_name:
+                item["name"] = object_name
+            payload.append(item)
+        return payload
+
+    @classmethod
+    def _extract_object_distance(
+        cls,
+        entry: dict[str, Any],
+        avatar_xyz: tuple[float, float, float] | None,
+    ) -> float | None:
+        for key in ("distance_m", "distance", "distance_meters", "dist", "range_m", "range"):
+            value = cls._try_float(entry.get(key))
+            if value is not None:
+                return value
+        if avatar_xyz is None:
+            return None
+        object_xyz = cls._parse_xyz_triplet(entry.get("position"))
+        if object_xyz is None and {"x", "y", "z"}.issubset({str(key) for key in entry.keys()}):
+            object_xyz = cls._parse_xyz_triplet(
+                {
+                    "x": entry.get("x"),
+                    "y": entry.get("y"),
+                    "z": entry.get("z"),
+                }
+            )
+        if object_xyz is None:
+            return None
+        return math.dist(avatar_xyz, object_xyz)
+
+    @staticmethod
+    def _is_dynamic_object_key(key: Any) -> bool:
+        text = str(key or "").strip().lower()
+        if not text:
+            return False
+        if "distance" in text or "proximity" in text:
+            return True
+        return text in {"dist", "range", "range_m", "bearing", "relative_bearing", "relative_position"}
+
+    @classmethod
+    def _parse_xyz_triplet(cls, value: Any) -> tuple[float, float, float] | None:
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            x = cls._try_float(value[0])
+            y = cls._try_float(value[1])
+            z = cls._try_float(value[2])
+            if x is None or y is None or z is None:
+                return None
+            return (x, y, z)
+        if isinstance(value, dict):
+            x = cls._try_float(value.get("x"))
+            y = cls._try_float(value.get("y"))
+            z = cls._try_float(value.get("z"))
+            if x is None or y is None or z is None:
+                return None
+            return (x, y, z)
+        if isinstance(value, str):
+            parts = re.findall(r"-?\d+(?:\.\d+)?", value)
+            if len(parts) < 3:
+                return None
+            x = cls._try_float(parts[0])
+            y = cls._try_float(parts[1])
+            z = cls._try_float(parts[2])
+            if x is None or y is None or z is None:
+                return None
+            return (x, y, z)
+        return None
+
+    @staticmethod
+    def _try_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     @classmethod
     def _filter_facts_entities(
@@ -472,7 +698,7 @@ class PromptManager:
         return False
 
     @staticmethod
-    def _system_prompt() -> str:
+    def system_prompt() -> str:
         return (
             "# IDENTITY & VOICE\n"
             "You are the roleplay persona declared below in this system instruction. Your primary goal is to provide immersive, "
@@ -480,10 +706,13 @@ class PromptManager:
             "# BEHAVIORAL GUIDELINES\n"
             "- Respond to the conversation context and environment naturally.\n"
             "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
+            "- Use 'environment.objects' as the canonical object catalog; use 'object_proximity' for nearest-object distance hints.\n"
             "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
             "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
             "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
+            "- Keep strict persona voice: preserve declared age, language level, and speaking style at all times.\n"
+            "- If a message only closes the previous exchange and adds no new intent, return an empty actions array.\n"
             "- If you have nothing meaningful to add, you may return no actions.\n"
             "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
             "- Use 'CHAT' for dialogue and 'EMOTE' for physical descriptions or internal states expressed outwardly.\n"
@@ -511,7 +740,7 @@ class PromptManager:
         ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting (like ```json) outside the JSON object."
 
     @staticmethod
-    def _state_system_prompt() -> str:
+    def state_system_prompt() -> str:
         return (
             "# ROLE\n"
             "You are the roleplay persona described in the input, but you MUST NOT generate any dialogue or actions.\n\n"
@@ -531,7 +760,7 @@ class PromptManager:
         )
 
     @staticmethod
-    def _autonomous_system_prompt() -> str:
+    def autonomous_system_prompt() -> str:
         return (
             "# IDENTITY & VOICE\n"
             "You are the roleplay persona declared below in this system instruction, deciding whether to act autonomously. "
@@ -539,6 +768,7 @@ class PromptManager:
             "# BEHAVIORAL GUIDELINES\n"
             "- Only act when it makes sense given recent activity, environment, and relationships.\n"
             "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
+            "- Use 'environment.objects' as the canonical object catalog; use 'object_proximity' for nearest-object distance hints.\n"
             "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
             "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
             "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
@@ -569,3 +799,10 @@ class PromptManager:
             "- Include 'next_delay_seconds' whenever possible so the scheduler can pick a natural next check.\n"
             "- Include mood (short label) and status (brief current activity)."
         ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
+
+    @staticmethod
+    def _merge_prompt_sections(*sections: dict[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        for section in sections:
+            payload.update(section)
+        return payload

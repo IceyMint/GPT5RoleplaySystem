@@ -740,6 +740,14 @@ class OpenRouterLLMClient(LLMClient):
         )
         self._response_mapper = ResponseMapper()
 
+    def _prompt_manager_instance(self) -> PromptManager:
+        prompt_manager = getattr(self, "_prompt_manager", None)
+        if isinstance(prompt_manager, PromptManager):
+            return prompt_manager
+        prompt_manager = PromptManager()
+        self._prompt_manager = prompt_manager
+        return prompt_manager
+
     def _reasoning_trace_store(self) -> Dict[str, Dict[str, Any]]:
         traces = getattr(self, "_reasoning_traces", None)
         if isinstance(traces, dict):
@@ -883,14 +891,7 @@ class OpenRouterLLMClient(LLMClient):
     ) -> bool:
         if not self._api_key:
             return await self._fallback.is_addressed_to_me(chat, persona, environment, participants, context)
-        system_prompt = (
-            "You are a fast classifier. Decide if the message is addressed to the AI persona. "
-            "Consider nicknames, phonetic spellings, typos, and direct mentions. "
-            "Use conversation context, recent messages, and spatial proximity to judge intent. "
-            "If the incoming message only acknowledges the AI's previous line and adds no new request, question, or topic, treat it as not requiring a reply. "
-            "Coordinates (x, y, z) are in meters. "
-            "Reply with only 'true' or 'false'."
-        )
+        system_prompt = self._prompt_manager_instance().address_check_system_prompt()
         user_prompt = self._format_address_check(chat, persona, environment, participants, context)
         response = self._request_text_with_model(
             model=self._address_model,
@@ -938,42 +939,13 @@ class OpenRouterLLMClient(LLMClient):
             ordered_messages = filtered_messages
 
         ordered_chats = [msg for _, msg in ordered_messages]
-        message_timestamps = [float(msg.timestamp or 0.0) for msg in ordered_chats if float(msg.timestamp or 0.0) > 0.0]
-        content = {
-            "existing_summary": summary,
-            "existing_summary_is_historical": True,
-            "new_messages_time_range": {
-                "start": format_pacific_time(min(message_timestamps)) if message_timestamps else "0",
-                "end": format_pacific_time(max(message_timestamps)) if message_timestamps else "0",
-            },
-            "messages": [
-                {
-                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
-                    "timestamp_unix": float(msg.timestamp or 0.0),
-                    "sender": msg.sender_name,
-                    "sender_id": msg.sender_id,
-                    "text": msg.text,
-                }
-                for msg in ordered_chats
-            ],
-        }
-        prompt = (
-            "Update the continuity summary by combining 'existing_summary' (older history) and 'messages' (new events). "
-            "Use message timestamps to keep strict chronology and temporal language. "
-            "If newer events supersede earlier states, keep the earlier event as past context and reflect the latest current state. "
-            "Use temporal phrasing such as earlier/later/now when it improves clarity. "
-            "Write a short-story style summary in about 4-8 sentences, clear about who did what and why. "
-            "Preserve unresolved questions, promises, and emotional shifts so later responses can continue naturally. "
-            "End with exactly one line in this format: "
-            "'Most recent confirmed (as of <timestamp>): <state>'. "
-            "Use the latest timestamp from 'messages' when available, otherwise use 'new_messages_time_range.end'. "
-            "Do not invent events."
-        )
+        prompt = self._prompt_manager_instance().continuity_summary_system_prompt()
+        content = self._prompt_manager_instance().format_continuity_summary_context(summary, ordered_chats)
         payload = await asyncio.to_thread(
             self._request_text_with_model,
             self._summary_model,
             prompt,
-            json.dumps(content, ensure_ascii=True),
+            content,
             self._max_tokens,
             self._temperature,
         )
@@ -992,35 +964,13 @@ class OpenRouterLLMClient(LLMClient):
             ),
         )
         ordered_chats = [msg for _, msg in ordered_messages]
-        message_timestamps = [float(msg.timestamp or 0.0) for msg in ordered_chats if float(msg.timestamp or 0.0) > 0.0]
-        content = {
-            "episode_time_range": {
-                "start": format_pacific_time(min(message_timestamps)) if message_timestamps else "0",
-                "end": format_pacific_time(max(message_timestamps)) if message_timestamps else "0",
-            },
-            "messages": [
-                {
-                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
-                    "timestamp_unix": float(msg.timestamp or 0.0),
-                    "sender": msg.sender_name,
-                    "sender_id": msg.sender_id,
-                    "text": msg.text,
-                }
-                for msg in ordered_chats
-            ],
-        }
-        prompt = (
-            "Create an episodic memory summary for long-term retrieval from the provided message sequence. "
-            "Keep strict chronology and focus on concrete events, key participants, important state changes, "
-            "commitments/promises, outcomes, and unresolved threads. "
-            "Keep it factual, compact (about 5-10 sentences), and specific with names. "
-            "Do not invent events."
-        )
+        prompt = self._prompt_manager_instance().episodic_summary_system_prompt()
+        content = self._prompt_manager_instance().format_episode_summary_context(ordered_chats)
         payload = await asyncio.to_thread(
             self._request_text_with_model,
             self._summary_model,
             prompt,
-            json.dumps(content, ensure_ascii=True),
+            content,
             self._max_tokens,
             self._temperature,
         )
@@ -1077,159 +1027,25 @@ class OpenRouterLLMClient(LLMClient):
         return _bundle_from_structured(parsed, mode="autonomous")
 
     def _system_prompt(self) -> str:
-        return (
-            "# IDENTITY & VOICE\n"
-            "You are the roleplay persona declared below in this system instruction. Your primary goal is to provide immersive, "
-            "in-character responses. Treat the provided persona name and persona instructions as your absolute identity.\n\n"
-            "# BEHAVIORAL GUIDELINES\n"
-            "- Respond to the conversation context and environment naturally.\n"
-            "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
-            "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
-            "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
-            "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
-            "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
-            "- Keep strict persona voice: preserve declared age, language level, and speaking style at all times.\n"
-            "- If a message only closes the previous exchange and adds no new intent, return an empty actions array.\n"
-            "- If you have nothing meaningful to add, you may return no actions.\n"
-            "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
-            "- Use 'CHAT' for dialogue and 'EMOTE' for physical descriptions or internal states expressed outwardly.\n"
-            "- For complex maneuvers (e.g., walking while talking), emit multiple actions in a single response.\n"
-            "- When 'incoming_batch' is provided, prioritize the 'latest_text' but use earlier messages for context or corrections.\n\n"
-            "# TECHNICAL CONSTRAINTS\n"
-            "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
-            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
-            "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
-            "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
-            "- DO NOT mix multiple commands into one action item.\n"
-            "- CHAT CONTENT: Dialogue only. Do not include action narration or *asterisk* emote markup in CHAT.\n"
-            "- EMOTE CONTENT: Emote/action narration only. Do not include spoken dialogue in EMOTE.\n"
-            "- EMOTE STYLE: For EMOTE content, write plain text and do not wrap with surrounding asterisks.\n"
-            "- ACTION CONTENT: Do not include '*' characters anywhere in action content.\n"
-            "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n\n"
-            "# MEMORY & KNOWLEDGE\n"
-            "- Use 'related_experiences' to inform your behavior based on past events.\n"
-            "- Treat 'previously' as historical recap, not immediate present state.\n"
-            "- For current reality, prioritize 'incoming', 'recent_messages', 'environment', and explicit timestamps.\n"
-            "- If 'summary_meta.range_age_seconds' is high (for example >1800), treat state claims in 'previously' as stale unless recent evidence confirms them.\n"
-            "- Suggest 'participant_hints' for new or important individuals mentioned in the chat.\n"
-            "- Optional scheduler override: you may set 'autonomy_decision' ([act, wait, sleep]) and "
-            "'next_delay_seconds' to adjust future autonomous cadence after this interaction."
-        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting (like ```json) outside the JSON object."
+        return self._prompt_manager_instance().system_prompt()
 
     def _system_prompt_for_context(self, context: ConversationContext) -> str:
-        persona = (context.persona or "").strip()
-        instructions = (context.persona_instructions or "").strip()
-        lines = [
-            self._system_prompt(),
-            "",
-            f"Persona name: {persona}.",
-            "You are this persona.",
-        ]
-        if instructions:
-            lines.append("Persona instructions:")
-            lines.append(instructions)
-        return "\n".join(line for line in lines if line is not None).strip()
+        return self._prompt_manager_instance().system_prompt_for_context(context)
 
     def _facts_system_prompt(self) -> str:
-        return (
-            "You are a precision fact extractor. Analyze the provided chat evidence to identify **Durable Person Facts**.\n\n"
-            "# DEFINITION: DURABLE FACT\n"
-            "A durable fact is information that is likely to remain true over time.\n"
-            "- YES: Names, relationships, professions, long-term preferences, physical traits, core history.\n"
-            "- NO: Temporary states (is hungry, is tired), fleeting locations (is at the bar), or current actions (is walking).\n\n"
-            "# GUIDELINES\n"
-            "- Only extract facts explicitly stated in 'evidence_messages' or 'incoming'.\n"
-            "- Do not derive facts from 'previously' or 'related_experiences'.\n"
-            "- Use 'people_facts' to avoid duplicates; if a fact already exists or is a close paraphrase, omit it.\n"
-            "- Only include facts that are likely to remain true for weeks or months.\n"
-            "- If no new durable facts are found, return an empty facts list."
-        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
+        return self._prompt_manager_instance().facts_system_prompt()
 
     def _state_system_prompt(self) -> str:
-        return (
-            "# ROLE\n"
-            "You are the roleplay persona described in the input, but you MUST NOT generate any dialogue or actions.\n\n"
-            "# TASK\n"
-            "- Update mood and status based on the latest interaction.\n"
-            "- Optionally provide participant_hints for notable individuals.\n"
-            "- Optionally extract durable person facts (names, relationships, long-term preferences).\n"
-            "- Optional scheduler override: set 'autonomy_decision' ([act, wait, sleep]) and "
-            "'next_delay_seconds' to influence future autonomous cadence.\n\n"
-            "# CONSTRAINTS\n"
-            "- DO NOT output chat text.\n"
-            "- DO NOT output actions.\n"
-            "- Return ONLY fields defined in the JSON schema.\n\n"
-            "# IMPORTANT: RESPONSE FORMAT\n"
-            "- Respond ONLY with a valid JSON object matching the schema.\n"
-            "- No preamble, no markdown."
-        )
+        return self._prompt_manager_instance().state_system_prompt()
 
     def _state_system_prompt_for_context(self, context: ConversationContext) -> str:
-        persona = (context.persona or "").strip()
-        instructions = (context.persona_instructions or "").strip()
-        lines = [
-            self._state_system_prompt(),
-            "",
-            f"Persona name: {persona}.",
-            "You are this persona.",
-        ]
-        if instructions:
-            lines.append("Persona instructions:")
-            lines.append(instructions)
-        return "\n".join(line for line in lines if line is not None).strip()
+        return self._prompt_manager_instance().state_system_prompt_for_context(context)
 
     def _autonomous_system_prompt(self) -> str:
-        return (
-            "# IDENTITY & VOICE\n"
-            "You are the roleplay persona declared below in this system instruction, deciding whether to act autonomously. "
-            "Treat the provided persona name and persona instructions as your identity and voice. You are this persona.\n\n"
-            "# BEHAVIORAL GUIDELINES\n"
-            "- Only act when it makes sense given recent activity, environment, and relationships.\n"
-            "- Grounding: Only interact with objects (TOUCH, SIT) or mention people explicitly listed in the 'environment' or 'participants' fields. If an object is not in the list, it does not exist for you.\n"
-            "- Current time is provided in Pacific Time (America/Los_Angeles).\n"
-            "- 'last_message_received_at' and 'last_ai_response_at' indicate the timing of the most recent interactions.\n"
-            "- Spatial context (coordinates) is provided in meters. Use this to judge proximity.\n"
-            "- Consider yourself 'at' or 'inside' an object/location if you are within 1.0 meter of its coordinates.\n"
-            "- It is acceptable to return no actions if no action is appropriate.\n"
-            "- Treat 'previously' as historical recap; do not assume it is still true without recent confirmation.\n"
-            "- Prioritize 'activity', 'recent_messages', and 'environment' for what is true right now.\n"
-            "- If 'summary_meta.range_age_seconds' is high (for example >1800), avoid acting on 'previously' alone.\n"
-            "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
-            "- Never output internal monologue, private reasoning, or narration about waiting.\n"
-            "- When you 'CHAT', speak outwardly to nearby people or the environment.\n"
-            "- Do not refer to yourself in the third person.\n"
-            "\n"
-            "# TECHNICAL CONSTRAINTS\n"
-            "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
-            "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
-            "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
-            "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
-            "- CHAT CONTENT: Dialogue only. Do not include action narration or *asterisk* emote markup in CHAT.\n"
-            "- EMOTE CONTENT: Emote/action narration only. Do not include spoken dialogue in EMOTE.\n"
-            "- EMOTE STYLE: For EMOTE content, write plain text and do not wrap with surrounding asterisks.\n"
-            "- ACTION CONTENT: Do not include '*' characters anywhere in action content.\n"
-            "- If both speech and action are needed, emit separate actions (one CHAT, one EMOTE).\n"
-            "- Include 'autonomy_decision' as one of [act, wait, sleep].\n"
-            "- 'act': emit one or more actions.\n"
-            "- 'wait': emit no actions and choose a suitable 'next_delay_seconds'.\n"
-            "- 'sleep': emit no actions and choose a longer 'next_delay_seconds'.\n"
-            "- Include 'next_delay_seconds' whenever possible so the scheduler can pick a natural next check.\n"
-            "- Include mood (short label) and status (brief current activity)."
-        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
+        return self._prompt_manager_instance().autonomous_system_prompt()
 
     def _autonomous_system_prompt_for_context(self, context: ConversationContext) -> str:
-        persona = (context.persona or "").strip()
-        instructions = (context.persona_instructions or "").strip()
-        lines = [
-            self._autonomous_system_prompt(),
-            "",
-            f"Persona name: {persona}.",
-            "You are this persona.",
-        ]
-        if instructions:
-            lines.append("Persona instructions:")
-            lines.append(instructions)
-        return "\n".join(line for line in lines if line is not None).strip()
+        return self._prompt_manager_instance().autonomous_system_prompt_for_context(context)
 
     def _structured_parse_cache(self) -> set[str]:
         cache = getattr(self, "_structured_parse_fallback_keys", None)
@@ -1655,64 +1471,7 @@ class OpenRouterLLMClient(LLMClient):
         participants: List[Participant] | None,
         context: ConversationContext | None,
     ) -> str:
-        env_block = {
-            "location": environment.location if environment else "",
-            "is_sitting": environment.is_sitting if environment else False,
-            "nearby_agents": [],
-            "nearby_objects": [],
-            "avatar_position": environment.avatar_position if environment else "",
-        }
-        if environment:
-            for agent in environment.agents[:6]:
-                name = str(agent.get("name", ""))
-                if name:
-                    env_block["nearby_agents"].append(name)
-            for obj in environment.objects[:4]:
-                name = str(obj.get("name", ""))
-                if name:
-                    env_block["nearby_objects"].append(name)
-            env_block["nearby_agents"].sort(key=str.casefold)
-            env_block["nearby_objects"].sort(key=str.casefold)
-
-        participant_names: List[str] = []
-        participant_details: List[Dict[str, Any]] = []
-        if participants:
-            participant_details = self._stable_participants_payload(participants)
-            for detail in participant_details:
-                username = str(detail.get("username") or detail.get("name") or "").strip()
-                if username:
-                    participant_names.append(username)
-
-        recent_messages: List[Dict[str, Any]] = []
-        summary = ""
-        recent_timestamps: List[float] = []
-        if context:
-            summary = context.summary
-            for msg in context.recent_messages[-6:]:
-                recent_messages.append(self._chat_payload(msg))
-                recent_timestamps.append(float(msg.timestamp or 0.0))
-
-        recent_time_range = {
-            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
-            "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
-        }
-
-        payload = {
-            "persona": persona,
-            "participants": participant_names[:8],
-            "participants_detail": participant_details[:8],
-            "environment": env_block,
-            "previously": summary,
-            "summary_meta": self._canonicalize_for_prompt(context.summary_meta if context else {}),
-            "agent_state": self._canonicalize_for_prompt(context.agent_state if context else {}),
-            "recent_time_range": recent_time_range,
-            "recent_messages": recent_messages,
-            "sender_name": chat.sender_name,
-            "sender_id": chat.sender_id,
-            "incoming": self._chat_payload(chat),
-            "now_timestamp": format_pacific_time(),
-        }
-        return self._serialize_payload(payload)
+        return self._prompt_manager_instance().format_address_check(chat, persona, environment, participants, context)
 
     def _format_context(
         self,
@@ -1721,36 +1480,7 @@ class OpenRouterLLMClient(LLMClient):
         overflow: List[InboundChat] | None,
         incoming_batch: List[Dict[str, Any]] | None,
     ) -> str:
-        recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
-        recent_time_range = {
-            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
-            "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
-        }
-        participants_payload = self._stable_participants_payload(context.participants)
-        now = time.time()
-        payload = {
-            "user_id": context.user_id,
-            "participants": participants_payload,
-            "environment": {
-                "location": context.environment.location,
-                "is_sitting": context.environment.is_sitting,
-                "objects": self._stable_entity_list(context.environment.objects),
-                "agents": self._stable_entity_list(context.environment.agents),
-                "avatar_position": context.environment.avatar_position,
-            },
-            "people_facts": self._canonicalize_for_prompt(context.people_facts),
-            "previously": context.summary,
-            "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
-            "agent_state": self._canonicalize_for_prompt(context.agent_state),
-            "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
-            "recent_time_range": recent_time_range,
-            "recent_messages": [self._chat_payload(m) for m in context.recent_messages],
-            "overflow_messages": [self._chat_payload(m) for m in (overflow or [])],
-            "incoming_batch": self._canonicalize_for_prompt(incoming_batch or []),
-            "incoming": self._chat_payload(chat),
-            "now_timestamp": format_pacific_time(now),
-        }
-        return self._serialize_payload(payload)
+        return self._prompt_manager_instance().format_context(chat, context, overflow, incoming_batch)
 
     def _format_facts_context_from_messages(
         self,
@@ -1763,26 +1493,16 @@ class OpenRouterLLMClient(LLMClient):
         related_experiences: List[Dict[str, Any]],
         people_facts: Dict[str, Any],
     ) -> str:
-        trimmed_evidence = list(evidence_messages[-24:])
-        incoming = trimmed_evidence[-1]
-        evidence_payload: List[Dict[str, Any]] = []
-        for message in trimmed_evidence[:-1]:
-            evidence_payload.append(self._chat_payload(message))
-        filtered_participants, filtered_people_facts = self._filter_facts_entities(
-            evidence_messages=trimmed_evidence,
+        return self._prompt_manager_instance().format_facts_context_from_messages(
+            evidence_messages=evidence_messages,
             participants=participants,
+            persona=persona,
+            user_id=user_id,
+            summary=summary,
+            summary_meta=summary_meta,
+            related_experiences=related_experiences,
             people_facts=people_facts,
         )
-        payload = {
-            "persona": persona,
-            "user_id": user_id,
-            "participants": self._stable_participants_payload(filtered_participants),
-            "people_facts": self._canonicalize_for_prompt(filtered_people_facts),
-            "evidence_messages": evidence_payload,
-            "incoming": self._chat_payload(incoming),
-            "now_timestamp": format_pacific_time(),
-        }
-        return self._serialize_payload(payload)
 
     @classmethod
     def _filter_facts_entities(
@@ -1883,41 +1603,7 @@ class OpenRouterLLMClient(LLMClient):
         return False
 
     def _format_autonomous_context(self, context: ConversationContext, activity: Dict[str, Any]) -> str:
-        recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
-        recent_time_range = {
-            "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
-            "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
-        }
-        participants_payload = self._stable_participants_payload(context.participants)
-        now = time.time()
-        payload = {
-            "mode": "autonomous",
-            "user_id": context.user_id,
-            "participants": participants_payload,
-            "environment": {
-                "location": context.environment.location,
-                "is_sitting": context.environment.is_sitting,
-                "objects": self._stable_entity_list(context.environment.objects),
-                "agents": self._stable_entity_list(context.environment.agents),
-                "avatar_position": context.environment.avatar_position,
-            },
-            "people_facts": self._canonicalize_for_prompt(context.people_facts),
-            "previously": context.summary,
-            "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
-            "agent_state": self._canonicalize_for_prompt(context.agent_state),
-            "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
-            "recent_time_range": recent_time_range,
-            "recent_messages": [self._chat_payload(m) for m in context.recent_messages],
-            "activity": {
-                "seconds_since_activity": activity.get("seconds_since_activity"),
-                "last_message_received_at": format_pacific_time(activity.get("last_inbound_ts")),
-                "last_ai_response_at": format_pacific_time(activity.get("last_response_ts")),
-                "mood": activity.get("mood"),
-                "status": activity.get("status"),
-            },
-            "now_timestamp": format_pacific_time(now),
-        }
-        return self._serialize_payload(payload)
+        return self._prompt_manager_instance().format_autonomous_context(context, activity)
 
     @staticmethod
     def _chat_payload(chat: InboundChat) -> Dict[str, Any]:
