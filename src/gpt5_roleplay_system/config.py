@@ -127,6 +127,7 @@ class ServerConfig:
     port: int = 9999
     persona: str = "DefaultPersona"
     user_id: str = ""
+    config_path: str = ""
     queue_max_size: int = 200
     queue_drop_policy: str = "drop_oldest"  # drop_oldest | drop_newest
     chat_batch_window_ms: int = 250

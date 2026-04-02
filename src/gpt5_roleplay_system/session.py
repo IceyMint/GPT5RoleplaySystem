@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 from .controller import SessionController
 from .models import Action
+from .persona_policy import is_chat_and_state_restricted_persona
 from .protocol import build_chat_response, encode_message
 
 
@@ -43,6 +44,8 @@ class ClientSession:
 
     async def send_actions(self, actions: List[Action]) -> None:
         if not actions:
+            return
+        if _controller_blocks_actions_output(self.controller):
             return
         payload = build_chat_response(actions)
         message = encode_message("chat_response", payload)
@@ -107,3 +110,16 @@ def _parse_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
     return bool(value)
+
+
+def _controller_blocks_actions_output(controller: Any) -> bool:
+    persona_reader = getattr(controller, "persona", None)
+    if not callable(persona_reader):
+        return False
+    try:
+        persona = persona_reader()
+    except Exception:
+        return False
+    if not isinstance(persona, str):
+        return False
+    return is_chat_and_state_restricted_persona(persona)

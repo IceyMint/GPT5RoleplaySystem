@@ -90,6 +90,7 @@ class StructuredParser:
             logger.warning("Structured request failed (%s): %s", exc.__class__.__name__, exc)
             return None
 
+
     def _request_structured_raw_create(
         self,
         client: Any,

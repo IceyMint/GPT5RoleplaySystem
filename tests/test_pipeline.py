@@ -1,4 +1,6 @@
 import asyncio
+import time
+from unittest.mock import patch
 
 from gpt5_roleplay_system.config import EpisodeConfig, FactsConfig
 from gpt5_roleplay_system.llm import (
@@ -16,6 +18,8 @@ from gpt5_roleplay_system.observability import NoOpTracer, Tracer
 from gpt5_roleplay_system.payload_contract import normalize_and_validate_payload
 from gpt5_roleplay_system.pipeline import MessagePipeline
 from gpt5_roleplay_system.models import Action, CommandType, EnvironmentSnapshot, InboundChat, Participant
+
+IGNORED_USER_ID = "00000000-0000-0000-0000-000000000000"
 
 
 class CaptureTracer(Tracer):
@@ -129,6 +133,29 @@ class OverflowTypeLLM(LLMClient):
         )
 
 
+class QualityFallbackEventLLM(EchoLLMClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self._quality_events: list[dict] = []
+
+    async def generate_bundle(self, chat, context, overflow=None, incoming_batch=None) -> LLMResponseBundle:
+        self._quality_events.append(
+            {
+                "mode": "bundle",
+                "reason": "test_fallback",
+                "fallback_client": "RuleBasedLLMClient",
+                "model": "test-model",
+                "timestamp": 1.0,
+            }
+        )
+        return await super().generate_bundle(chat, context, overflow, incoming_batch)
+
+    def consume_quality_fallback_events(self) -> list[dict]:
+        events = list(self._quality_events)
+        self._quality_events = []
+        return events
+
+
 class IncomingSchedulerHintLLM(LLMClient):
     async def is_addressed_to_me(self, chat, persona, environment=None, participants=None, context=None) -> bool:
         return True
@@ -184,6 +211,9 @@ class NeverAddressedLLM(LLMClient):
     async def summarize_overflow(self, summary, messages) -> str:
         return ""
 
+    async def summarize_episode(self, messages) -> str:
+        return "Never addressed episode containing: " + " ".join(m.text for m in messages)
+
 
 class AddressedEmptySummaryLLM(LLMClient):
     async def is_addressed_to_me(self, chat, persona, environment=None, participants=None, context=None) -> bool:
@@ -223,6 +253,33 @@ class SummaryCaptureNeverAddressedLLM(LLMClient):
 
     async def summarize_overflow(self, summary, messages) -> str:
         self.summarize_calls.append([str(msg.text) for msg in messages])
+        return summary or "summary"
+
+
+class SummarySenderCaptureLLM(LLMClient):
+    def __init__(self) -> None:
+        self.summarize_calls: list[list[dict[str, str]]] = []
+
+    async def is_addressed_to_me(self, chat, persona, environment=None, participants=None, context=None) -> bool:
+        return False
+
+    async def generate_response(self, chat, context) -> LLMResponse:  # pragma: no cover - unused
+        raise NotImplementedError
+
+    async def extract_facts(self, chat, context) -> list[ExtractedFact]:  # pragma: no cover - unused
+        return []
+
+    async def summarize_overflow(self, summary, messages) -> str:
+        self.summarize_calls.append(
+            [
+                {
+                    "sender_id": str(msg.sender_id or ""),
+                    "sender_name": str(msg.sender_name or ""),
+                    "text": str(msg.text or ""),
+                }
+                for msg in messages
+            ]
+        )
         return summary or "summary"
 
 
@@ -355,6 +412,52 @@ def test_prompt_bundle_includes_persona_instructions():
     assert prompt_payloads
     payload = prompt_payloads[-1]
     assert payload.get("persona_instructions") == "Be playful, curious, and brief."
+
+
+def test_prompt_bundle_environment_entities_use_uuid_only():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="isabella.elara",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+    pipeline.update_environment(
+        {
+            "location": "Test Zone",
+            "agents": [
+                {"target_uuid": "agent-b", "name": "B"},
+                {"uuid": "agent-a", "target_uuid": "agent-a", "name": "A"},
+            ],
+            "objects": [
+                {"target_uuid": "obj-b", "name": "B", "distance": 1.2},
+                {"uuid": "obj-a", "target_uuid": "obj-a", "name": "A", "distance": 5.0},
+            ],
+        }
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "hello",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 123.0,
+            }
+        )
+    )
+
+    prompt_payloads = [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+    assert prompt_payloads
+    environment = prompt_payloads[-1]["environment"]
+    assert [agent.get("uuid") for agent in environment["agents"]] == ["agent-b", "agent-a"]
+    assert all("target_uuid" not in agent for agent in environment["agents"])
+    assert [obj.get("uuid") for obj in environment["objects"]] == ["obj-b", "obj-a"]
+    assert all("target_uuid" not in obj for obj in environment["objects"])
 
 
 def test_prompt_bundle_never_labels_ai_as_ai():
@@ -515,7 +618,7 @@ def test_autonomy_filter_uses_persona_name_not_uuid():
     assert filtered == []
 
 
-def test_people_facts_include_last_seen():
+def test_prompt_payload_moves_last_seen_into_live_people_recency():
     tracer = CaptureTracer()
     store = InMemoryKnowledgeStore()
     store.upsert_person_facts("user-2", "Evie", [])
@@ -562,9 +665,109 @@ def test_people_facts_include_last_seen():
     assert prompt_payloads
     payload = prompt_payloads[-1]
     evie = payload["people_facts"]["user-2"]
-    assert evie["last_seen_ts"] == 200.0
-    assert evie["last_seen_seconds_ago"] is not None
-    assert evie["last_seen_seconds_ago"] >= 0.0
+    assert "last_seen_ts" not in evie
+    assert "last_seen_seconds_ago" not in evie
+    recency = payload["people_recency"]["user-2"]
+    assert recency["last_seen_seconds_ago"] >= 0
+    assert recency["last_seen_bucket"]
+
+
+def test_prompt_payload_marks_reappearance_after_long_absence():
+    tracer = CaptureTracer()
+    store = InMemoryKnowledgeStore()
+    store.upsert_person_facts("user-2", "Evie", [])
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=store,
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    base_ts = time.time()
+    pipeline.update_environment(
+        {
+            "agents": [{"name": "Evie", "uuid": "user-2"}],
+            "objects": [],
+            "location": "Test Zone",
+            "timestamp": base_ts - 400.0,
+        }
+    )
+    pipeline.update_environment(
+        {
+            "agents": [],
+            "objects": [],
+            "location": "Test Zone",
+            "timestamp": base_ts - 399.0,
+        }
+    )
+    pipeline.update_environment(
+        {
+            "agents": [{"name": "Evie", "uuid": "user-2"}],
+            "objects": [],
+            "location": "Test Zone",
+            "timestamp": base_ts,
+        }
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Hello again",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": base_ts + 10.0,
+                "participants": [{"user_id": "user-2", "name": "Evie"}],
+            }
+        )
+    )
+
+    prompt_payloads = [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+    assert prompt_payloads
+    recency = prompt_payloads[-1]["people_recency"]["user-2"]
+    assert recency["reappeared_after_seconds"] >= 300
+    assert recency["reappeared_after_bucket"] in {"5-15m", "15-60m"}
+
+
+def test_prompt_payload_marks_mentioned_absent_person_as_seen_today():
+    tracer = CaptureTracer()
+    store = InMemoryKnowledgeStore()
+    store.upsert_person_facts("user-42", "Kei", ["likes tea"])
+    base_ts = 1_000_000.0
+    store.update_last_seen("user-42", "Kei", base_ts - 1800.0)
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=store,
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    with patch("gpt5_roleplay_system.pipeline.time.time", return_value=base_ts):
+        asyncio.run(
+            pipeline.process_chat(
+                {
+                    "text": "Did you see Kei today?",
+                    "from_name": "User",
+                    "from_id": "user-1",
+                    "timestamp": base_ts,
+                }
+            )
+        )
+
+    prompt_payloads = [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+    assert prompt_payloads
+    payload = prompt_payloads[-1]
+    assert payload["people_facts"]["user-42"]["match_type"] == "text_mention"
+    recency = payload["people_recency"]["user-42"]
+    assert recency["last_seen_day_relation"] == "today"
+    assert recency["last_seen_seconds_ago"] == 1800
 
 
 def test_pipeline_ignores_self_message():
@@ -624,6 +827,154 @@ def test_pipeline_ignores_self_message_by_persona_name_when_uuid_mismatches():
     assert recent, "self message should still be seeded into memory"
     assert recent[-1].sender_name == "isabella.elara"
     assert recent[-1].sender_id == "ai"
+
+
+def test_pipeline_ignores_configured_user_id_message():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    actions = asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "system message",
+                "from_name": "System",
+                "from_id": IGNORED_USER_ID,
+                "timestamp": 2,
+            }
+        )
+    )
+
+    assert actions == []
+    assert pipeline._memory.recent() == []  # type: ignore[attr-defined]
+    assert pipeline._rolling_buffer.items() == []  # type: ignore[attr-defined]
+    assert not [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+
+
+def test_pipeline_ignores_configured_user_id_in_mixed_batch():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5, defer_compression=True),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    actions = asyncio.run(
+        pipeline.process_chat_batch(
+            [
+                {
+                    "text": "system message",
+                    "from_name": "System",
+                    "from_id": IGNORED_USER_ID,
+                    "timestamp": 2,
+                },
+                {
+                    "text": "hello",
+                    "from_name": "Evie",
+                    "from_id": "user-2",
+                    "timestamp": 3,
+                },
+            ]
+        )
+    )
+
+    assert [action.content for action in actions] == ["Echo: hello"]
+    recent = pipeline._memory.recent()  # type: ignore[attr-defined]
+    user_messages = [item for item in recent if item.sender_id != "ai"]
+    assert len(user_messages) == 1
+    assert user_messages[0].sender_id == "user-2"
+    assert user_messages[0].text == "hello"
+
+    prompt_payloads = [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+    assert prompt_payloads
+    incoming_batch = prompt_payloads[-1]["incoming_batch"]
+    assert [entry.get("sender_id") for entry in incoming_batch] == ["user-2"]
+    participant_ids = {entry.get("user_id") for entry in prompt_payloads[-1]["participants"]}
+    assert IGNORED_USER_ID not in participant_ids
+
+
+def test_pipeline_blocks_exact_ignored_message_payload():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="tiffanylynn03",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    actions = asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Roleplay AI chat output enabled",
+                "sender_id": IGNORED_USER_ID,
+                "sender_name": IGNORED_USER_ID,
+                "timestamp": 1772969267.5980396,
+                "metadata": {},
+            }
+        )
+    )
+
+    assert actions == []
+    assert pipeline._rolling_buffer.items() == []  # type: ignore[attr-defined]
+    assert pipeline._memory.recent() == []  # type: ignore[attr-defined]
+    assert not [payload for name, payload in tracer.events if name == "llm_address_check"]
+    assert not [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+
+
+def test_pipeline_treats_exact_ai_payload_as_self_and_seeds_history():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="tiffanylynn03",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    actions = asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "/me wiggles in her sleep and squeezes her newborn brother tightly",
+                "sender_id": "ai",
+                "sender_name": "tiffanylynn03",
+                "timestamp": 1772976378.5799742,
+                "metadata": {},
+            }
+        )
+    )
+
+    assert actions == []
+    rolling = pipeline._rolling_buffer.items()  # type: ignore[attr-defined]
+    assert len(rolling) == 1
+    assert rolling[0].sender_id == "ai"
+    assert rolling[0].sender_name == "tiffanylynn03"
+    assert rolling[0].text == "/me wiggles in her sleep and squeezes her newborn brother tightly"
+    recent = pipeline._memory.recent()  # type: ignore[attr-defined]
+    assert len(recent) == 1
+    assert recent[0].sender_id == "ai"
+    assert recent[0].sender_name == "tiffanylynn03"
+    assert not [payload for name, payload in tracer.events if name == "llm_address_check"]
+    assert not [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
 
 
 class ParticipantCaptureLLM(EchoLLMClient):
@@ -886,6 +1237,26 @@ class DuplicateFactsStore(InMemoryKnowledgeStore):
         return profiles
 
 
+class MentionLookupCountingStore(InMemoryKnowledgeStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fetch_by_name_calls = 0
+        self.fetch_by_partial_calls = 0
+        self.fetch_name_index_calls = 0
+
+    def fetch_people_by_name(self, names):
+        self.fetch_by_name_calls += 1
+        return super().fetch_people_by_name(names)
+
+    def fetch_people_by_partial_name(self, names):
+        self.fetch_by_partial_calls += 1
+        return super().fetch_people_by_partial_name(names)
+
+    def fetch_people_name_index(self):
+        self.fetch_name_index_calls += 1
+        return super().fetch_people_name_index()
+
+
 def test_pipeline_dedupes_people_facts_from_store():
     llm = ContextCaptureLLM()
     store = DuplicateFactsStore()
@@ -1078,6 +1449,96 @@ def test_llm_summarize_receives_overflow_only_not_current_incoming():
     assert "four" not in last_call
 
 
+def test_pipeline_summarize_overflow_preserves_sender_name_not_uuid():
+    llm = SummarySenderCaptureLLM()
+    sender_uuid = "4b7e7cb8-f2e1-49c9-9a57-aec11ad15535"
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=1, defer_compression=True),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        summary_strategy="llm",
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "/me kisses Tiffany, holds her gently, and begins to nurse her",
+                "from_name": "Rene",
+                "from_id": sender_uuid,
+                "timestamp": 10.0,
+            }
+        )
+    )
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "hello",
+                "from_name": "Tiffany",
+                "from_id": "user-2",
+                "timestamp": 11.0,
+            }
+        )
+    )
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "still here",
+                "from_name": "Tiffany",
+                "from_id": "user-2",
+                "timestamp": 12.0,
+            }
+        )
+    )
+
+    assert llm.summarize_calls
+    assert llm.summarize_calls[-1] == [
+        {
+            "sender_id": sender_uuid,
+            "sender_name": "Rene",
+            "text": "/me kisses Tiffany, holds her gently, and begins to nurse her",
+        }
+    ]
+
+
+def test_pipeline_filters_overflow_already_covered_by_summary_meta():
+    llm = SummaryCaptureNeverAddressedLLM()
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=1, defer_compression=True),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        summary_strategy="llm",
+    )
+
+    pipeline._memory.add_message(  # type: ignore[attr-defined]
+        InboundChat(text="one", sender_id="user-1", sender_name="User", timestamp=10.0, raw={})
+    )
+    pipeline._memory.add_message(  # type: ignore[attr-defined]
+        InboundChat(text="two", sender_id="user-1", sender_name="User", timestamp=11.0, raw={})
+    )
+    pipeline._memory._summary = "summary"  # type: ignore[attr-defined]
+    pipeline._memory._summary_meta = {  # type: ignore[attr-defined]
+        "last_updated_ts": 20.0,
+        "range_start_ts": 10.0,
+        "range_end_ts": 10.0,
+    }
+
+    asyncio.run(pipeline.process_chat({"text": "three", "from_name": "User", "from_id": "user-1", "timestamp": 12.0}))
+    asyncio.run(pipeline.process_chat({"text": "four", "from_name": "User", "from_id": "user-1", "timestamp": 13.0}))
+
+    assert llm.summarize_calls == [["two"]]
+    assert pipeline._memory.summary_meta()["range_end_ts"] == 11.0  # type: ignore[attr-defined]
+
+
 def test_not_addressed_llm_summary_empty_requeues_overflow_without_simple_fallback():
     pipeline = MessagePipeline(
         persona="TestPersona",
@@ -1118,6 +1579,29 @@ def test_addressed_llm_summary_empty_requeues_overflow_without_simple_fallback()
     asyncio.run(pipeline.process_chat({"text": "three", "from_name": "User", "from_id": "user-1", "timestamp": 12.0}))
 
     assert pipeline._memory.summary() == ""  # type: ignore[attr-defined]
+    overflow = [item.text for item in pipeline._memory.drain_overflow()]  # type: ignore[attr-defined]
+    assert overflow == ["one", "two"]
+
+
+def test_simple_summary_strategy_keeps_overflow_when_no_summary_is_produced():
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=NeverAddressedLLM(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=1, defer_compression=True),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+        summary_strategy="simple",
+    )
+
+    asyncio.run(pipeline.process_chat({"text": "one", "from_name": "User", "from_id": "user-1", "timestamp": 10.0}))
+    asyncio.run(pipeline.process_chat({"text": "two", "from_name": "User", "from_id": "user-1", "timestamp": 11.0}))
+    asyncio.run(pipeline.process_chat({"text": "three", "from_name": "User", "from_id": "user-1", "timestamp": 12.0}))
+
+    assert pipeline._memory.summary() == ""  # type: ignore[attr-defined]
+    assert pipeline._memory.summary_meta() == {}  # type: ignore[attr-defined]
     overflow = [item.text for item in pipeline._memory.drain_overflow()]  # type: ignore[attr-defined]
     assert overflow == ["one", "two"]
 
@@ -1540,6 +2024,59 @@ def test_periodic_facts_restore_preserves_pending_queue():
     assert llm_restore.evidence_calls[0] == ["msg-0", "msg-1", "msg-2"]
 
 
+def test_pipeline_snapshot_restores_display_name_cache_for_nameless_incoming():
+    tracer = CaptureTracer()
+    pipeline_seed = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+    )
+    pipeline_seed.update_environment(
+        {
+            "agents": [{"name": "Rene", "uuid": "user-2"}],
+            "objects": [],
+            "location": "Test Zone",
+            "timestamp": 10.0,
+        }
+    )
+
+    snapshot = pipeline_seed.snapshot_state()
+    assert snapshot["identity"]["display_names_by_id"]["user-2"] == "Rene"
+
+    pipeline_restore = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+    pipeline_restore.restore_state(snapshot)
+
+    asyncio.run(
+        pipeline_restore.process_chat(
+            {
+                "text": "hello again",
+                "from_id": "user-2",
+                "timestamp": 11.0,
+            }
+        )
+    )
+
+    prompt_payloads = [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+    assert prompt_payloads
+    incoming = prompt_payloads[-1]["incoming"]
+    assert incoming["sender"] == "Rene"
+    assert incoming["sender_id"] == "user-2"
+
+
 def test_periodic_facts_restore_requeues_recent_when_snapshot_has_no_facts_state():
     llm_seed = PeriodicFactsLLM(
         [ExtractedFact(user_id="user-2", name="Evie", facts=["likes tea"])]
@@ -1663,6 +2200,44 @@ def test_pipeline_partial_name_fallback_marks_context():
     )
 
 
+def test_pipeline_uses_cached_display_name_when_incoming_name_missing():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=EchoLLMClient(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+    pipeline.update_environment(
+        {
+            "agents": [{"name": "Rene", "uuid": "user-2"}],
+            "objects": [],
+            "location": "Test Zone",
+            "timestamp": 10.0,
+        }
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "hello there",
+                "from_id": "user-2",
+                "timestamp": 11.0,
+            }
+        )
+    )
+
+    prompt_payloads = [payload for name, payload in tracer.events if name == "llm_prompt_bundle"]
+    assert prompt_payloads
+    incoming = prompt_payloads[-1]["incoming"]
+    assert incoming["sender"] == "Rene"
+    assert incoming["sender_id"] == "user-2"
+
+
 def test_pipeline_text_mention_lookup_marks_context():
     llm = ContextCaptureLLM()
     store = InMemoryKnowledgeStore()
@@ -1694,6 +2269,105 @@ def test_pipeline_text_mention_lookup_marks_context():
     assert "user-42" in people_facts
     assert people_facts["user-42"].get("match_type") == "text_mention"
     assert people_facts["user-42"].get("matched_query") == "james"
+
+
+def test_pipeline_text_mention_uses_name_index_without_word_probing():
+    llm = ContextCaptureLLM()
+    store = MentionLookupCountingStore()
+    store.upsert_person_facts("user-42", "James Allardyce", ["is a father"])
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=store,
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Did you see James today?",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 8,
+            }
+        )
+    )
+
+    assert llm.contexts
+    people_facts = llm.contexts[-1].people_facts
+    assert people_facts["user-42"].get("match_type") == "text_mention"
+    assert store.fetch_by_name_calls == 0
+    assert store.fetch_by_partial_calls == 0
+    assert store.fetch_name_index_calls >= 1
+
+
+def test_pipeline_text_mention_skips_ambiguous_name_tokens():
+    llm = ContextCaptureLLM()
+    store = InMemoryKnowledgeStore()
+    store.upsert_person_facts("user-1", "Alex Smith", [])
+    store.upsert_person_facts("user-2", "Alex Johnson", [])
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=store,
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Did Alex come by earlier?",
+                "from_name": "User",
+                "from_id": "user-9",
+                "timestamp": 9,
+            }
+        )
+    )
+
+    assert llm.contexts
+    people_facts = llm.contexts[-1].people_facts
+    assert "user-1" not in people_facts
+    assert "user-2" not in people_facts
+
+
+def test_pipeline_text_mention_matches_multiword_name():
+    llm = ContextCaptureLLM()
+    store = InMemoryKnowledgeStore()
+    store.upsert_person_facts("user-5", "Anna Marie", ["likes drawing"])
+    pipeline = MessagePipeline(
+        persona="TestPersona",
+        user_id="ai-1",
+        llm=llm,
+        knowledge_store=store,
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=NoOpTracer(),
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "Is Anna Marie around today?",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 10,
+            }
+        )
+    )
+
+    assert llm.contexts
+    people_facts = llm.contexts[-1].people_facts
+    assert people_facts["user-5"].get("match_type") == "text_mention"
+    assert people_facts["user-5"].get("matched_query") == "anna marie"
 
 
 def test_token_similarity_search_returns_relevant():
@@ -1976,6 +2650,39 @@ def test_pipeline_logs_reasoning_trace_for_bundle():
     assert payload["has_reasoning"] is True
     assert payload["reasoning_tokens"] == 64
     assert payload["reasoning_effort"] == "low"
+
+
+def test_pipeline_logs_quality_fallback_events_from_llm():
+    tracer = CaptureTracer()
+    pipeline = MessagePipeline(
+        persona="TracePersona",
+        user_id="ai-1",
+        llm=QualityFallbackEventLLM(),
+        knowledge_store=InMemoryKnowledgeStore(),
+        memory=ConversationMemory(SimpleMemoryCompressor(), max_recent=5),
+        rolling_buffer=RollingBuffer(max_items=5),
+        experience_store=ExperienceStore(),
+        tracer=tracer,
+    )
+
+    asyncio.run(
+        pipeline.process_chat(
+            {
+                "text": "hello",
+                "from_name": "User",
+                "from_id": "user-1",
+                "timestamp": 100,
+            }
+        )
+    )
+
+    fallback_payloads = [payload for name, payload in tracer.events if name == "llm_quality_fallback"]
+    assert fallback_payloads
+    payload = fallback_payloads[-1]
+    assert payload["mode"] == "bundle"
+    assert payload["reason"] == "test_fallback"
+    assert payload["fallback_client"] == "RuleBasedLLMClient"
+    assert payload["model"] == "test-model"
 
 
 def test_experience_created_on_episode_boundary():

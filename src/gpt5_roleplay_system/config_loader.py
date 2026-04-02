@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,6 +21,22 @@ from .config import (
     ServerConfig,
     WandbConfig,
 )
+
+
+logger = logging.getLogger("gpt5_roleplay_config")
+_CONFIG_WRITE_LOCK = threading.Lock()
+
+
+class _LiteralDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_multiline_str(dumper: yaml.SafeDumper, value: str) -> yaml.nodes.ScalarNode:
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_LiteralDumper.add_representer(str, _represent_multiline_str)
 
 
 class ConfigLoader:
@@ -108,6 +126,7 @@ class ConfigLoader:
             port=int(self._getenv("GPT5_ROLEPLAY_PORT", ServerConfig().port)),
             persona=persona,
             user_id=raw.get("user_id", self._getenv("GPT5_ROLEPLAY_USER_ID", "")),
+            config_path=str(config_path) if config_path else "",
             queue_max_size=int(self._getenv("GPT5_ROLEPLAY_QUEUE_MAX", raw.get("queue_max_size", 200))),
             queue_drop_policy=self._getenv("GPT5_ROLEPLAY_QUEUE_DROP", raw.get("queue_drop_policy", "drop_oldest")),
             chat_batch_window_ms=int(self._getenv("GPT5_ROLEPLAY_BATCH_WINDOW_MS", raw.get("chat_batch_window_ms", 250))),
@@ -131,6 +150,45 @@ class ConfigLoader:
             ),
             persona_profiles=persona_profiles,
         )
+
+    def ensure_persona_profile(
+        self,
+        path: str | Path | None,
+        *,
+        persona_name: str,
+        template_name: str = "DefaultPersona",
+    ) -> str:
+        persona_name = str(persona_name or "").strip()
+        template_name = str(template_name or "").strip()
+        if not persona_name or not template_name:
+            return ""
+        config_path = Path(path).expanduser() if path else None
+        if config_path is None or not config_path.exists():
+            return ""
+        with _CONFIG_WRITE_LOCK:
+            raw = self._load_yaml(config_path)
+            if not isinstance(raw, dict):
+                return ""
+            profiles = raw.get("persona_profiles")
+            if not isinstance(profiles, dict):
+                profiles = {}
+                raw["persona_profiles"] = profiles
+            persona_key = self._find_case_insensitive_key(profiles, persona_name)
+            if persona_key is not None:
+                existing = profiles.get(persona_key)
+                return str(existing).strip() if isinstance(existing, str) else ""
+            template_key = self._find_case_insensitive_key(profiles, template_name)
+            if template_key is None:
+                return ""
+            template_value = profiles.get(template_key)
+            if not isinstance(template_value, str):
+                return ""
+            instructions = template_value.strip()
+            if not instructions:
+                return ""
+            profiles[persona_name] = instructions
+            self._write_yaml(config_path, raw)
+            return instructions
 
     def load_llm_config(self, raw: dict[str, Any], api_keys: dict[str, Any]) -> LLMConfig:
         llm_raw = raw.get("llm", {}) if isinstance(raw.get("llm"), dict) else {}
@@ -234,6 +292,9 @@ class ConfigLoader:
             "llm" if llm_config.api_key else "simple",
         )
         if summary_strategy == "llm" and not llm_config.api_key:
+            logger.warning(
+                "Memory summary strategy downgraded from llm to simple because no LLM API key is configured."
+            )
             summary_strategy = "simple"
 
         return MemoryConfig(
@@ -366,6 +427,29 @@ class ConfigLoader:
         with path.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _write_yaml(path: Path, data: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.dump(
+                data,
+                handle,
+                Dumper=_LiteralDumper,
+                sort_keys=False,
+                allow_unicode=True,
+                default_flow_style=False,
+            )
+
+    @staticmethod
+    def _find_case_insensitive_key(mapping: dict[str, Any], target: str) -> str | None:
+        key = str(target or "").casefold()
+        if not key:
+            return None
+        for existing in mapping.keys():
+            if str(existing).casefold() == key:
+                return str(existing)
+        return None
 
     def _env_bool(self, name: str, default: bool) -> bool:
         raw = self._getenv(name, "")

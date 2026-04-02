@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import yaml
+
 from gpt5_roleplay_system.config import load_config
+from gpt5_roleplay_system.config_loader import ConfigLoader
 
 
 def test_load_config_separates_embedding_key_from_neo4j_genai_key(tmp_path, monkeypatch):
@@ -150,3 +153,27 @@ posture_stale_seconds: 8.5
     monkeypatch.delenv("GPT5_ROLEPLAY_POSTURE_STALE_SECONDS", raising=False)
     config = load_config(str(config_path))
     assert config.posture_stale_seconds == 8.5
+
+
+def test_ensure_persona_profile_clones_default_persona_template(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+ai_name: DefaultPersona
+persona_profiles:
+  DefaultPersona: |
+    Be warm.
+    Stay brief.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    instructions = ConfigLoader().ensure_persona_profile(
+        config_path,
+        persona_name="Isabella",
+        template_name="DefaultPersona",
+    )
+
+    assert instructions == "Be warm.\nStay brief."
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert payload["persona_profiles"]["Isabella"] == "Be warm.\nStay brief."

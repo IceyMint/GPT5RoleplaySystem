@@ -72,6 +72,13 @@ class ContextBuilder:
         self._last_seen_cache: dict[str, float] = {}
         self._owner = owner
 
+    def upsert_persona_profile(self, persona: str, instructions: str) -> None:
+        key = str(persona or "").strip().casefold()
+        value = str(instructions or "").strip()
+        if not key or not value:
+            return
+        self._persona_profiles[key] = value
+
     def update_environment(self, data: dict[str, Any]) -> None:
         agents = self._normalize_entities(data.get("agents", []))
         objects = self._normalize_entities(data.get("objects", []))

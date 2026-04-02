@@ -126,6 +126,7 @@ class GPT5RoleplayServer:
             facts_config=self._config.facts,
             episode_config=self._config.episode,
             persona_profiles=self._config.persona_profiles,
+            config_path=self._config.config_path,
         )
         # Start each new connection with chat output disabled until explicitly enabled.
         controller.set_llm_chat_enabled(False)

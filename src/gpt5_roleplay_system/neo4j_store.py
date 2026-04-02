@@ -40,9 +40,16 @@ def _normalize_fact_key(text: str) -> str:
 class PersonProfile:
     user_id: str
     name: str
+    aliases: List[str] = field(default_factory=list)
     facts: List[str] = field(default_factory=list)
     relationships: List[Dict[str, Any]] = field(default_factory=list)
     last_seen_ts: float = 0.0
+
+
+@dataclass
+class PersonNameIndexEntry:
+    user_id: str
+    names: List[str] = field(default_factory=list)
 
 
 class KnowledgeStore:
@@ -53,6 +60,9 @@ class KnowledgeStore:
         raise NotImplementedError
 
     def fetch_people_by_partial_name(self, names: List[str]) -> Dict[str, PersonProfile]:
+        raise NotImplementedError
+
+    def fetch_people_name_index(self) -> List[PersonNameIndexEntry]:
         raise NotImplementedError
 
     def upsert_person_facts(self, user_id: str, name: str, facts: List[str]) -> None:
@@ -69,33 +79,63 @@ class InMemoryKnowledgeStore(KnowledgeStore):
     def __init__(self) -> None:
         self._people: Dict[str, PersonProfile] = {}
 
+    @staticmethod
+    def _merge_aliases(existing: List[str], candidates: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen: set[str] = set()
+        for value in list(existing or []) + list(candidates or []):
+            text = str(value or "").strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(text)
+        return merged
+
     def fetch_people(self, user_ids: List[str]) -> Dict[str, PersonProfile]:
         return {user_id: self._people[user_id] for user_id in user_ids if user_id in self._people}
 
     def fetch_people_by_name(self, names: List[str]) -> Dict[str, PersonProfile]:
         if not names:
             return {}
-        names_lower = {name.lower() for name in names if name}
+        names_lower = {name.casefold() for name in names if name}
         results: Dict[str, PersonProfile] = {}
         for profile in self._people.values():
-            if profile.name.lower() in names_lower:
+            profile_names = [profile.name] + list(profile.aliases or [])
+            if any(str(value or "").casefold() in names_lower for value in profile_names):
                 results[profile.user_id] = profile
         return results
 
     def fetch_people_by_partial_name(self, names: List[str]) -> Dict[str, PersonProfile]:
         if not names:
             return {}
-        tokens = [name.lower() for name in names if name]
+        tokens = [name.casefold() for name in names if name]
         results: Dict[str, PersonProfile] = {}
         for profile in self._people.values():
-            name_lower = profile.name.lower()
-            if any(token in name_lower for token in tokens):
+            profile_names = [profile.name] + list(profile.aliases or [])
+            profile_names_lower = [str(value or "").casefold() for value in profile_names if value]
+            if any(token in name_value for token in tokens for name_value in profile_names_lower):
                 results[profile.user_id] = profile
         return results
 
+    def fetch_people_name_index(self) -> List[PersonNameIndexEntry]:
+        entries: List[PersonNameIndexEntry] = []
+        for profile in self._people.values():
+            if not profile.user_id:
+                continue
+            names = self._merge_aliases([], [profile.name] + list(profile.aliases or []))
+            if not names:
+                continue
+            entries.append(PersonNameIndexEntry(user_id=profile.user_id, names=names))
+        return entries
+
     def upsert_person_facts(self, user_id: str, name: str, facts: List[str]) -> None:
         profile = self._people.get(user_id) or PersonProfile(user_id=user_id, name=name)
-        profile.name = name or profile.name
+        if name:
+            profile.name = name
+        profile.aliases = self._merge_aliases(profile.aliases, [name, profile.name])
         existing_keys = {_normalize_fact_key(item) for item in profile.facts if _normalize_fact_key(item)}
         for fact in facts:
             key = _normalize_fact_key(fact)
@@ -116,6 +156,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         profile = self._people.get(user_id) or PersonProfile(user_id=user_id, name=name or user_id)
         if name:
             profile.name = name
+        profile.aliases = self._merge_aliases(profile.aliases, [name, profile.name])
         profile.last_seen_ts = max(float(timestamp or 0.0), float(profile.last_seen_ts or 0.0))
         self._people[user_id] = profile
 
@@ -188,6 +229,7 @@ class Neo4jKnowledgeStore(KnowledgeStore):
                 profile = PersonProfile(
                     user_id=person.get("user_id"),
                     name=person.get("name", ""),
+                    aliases=_dedupe_preserve_order(person.get("aliases", []) or []),
                     facts=_dedupe_preserve_order(person.get("facts", []) or []),
                     relationships=rels or [],
                     last_seen_ts=float(person.get("last_seen_ts", 0.0) or 0.0),
@@ -220,6 +262,7 @@ class Neo4jKnowledgeStore(KnowledgeStore):
                 profile = PersonProfile(
                     user_id=person.get("user_id"),
                     name=person.get("name", ""),
+                    aliases=_dedupe_preserve_order(person.get("aliases", []) or []),
                     facts=_dedupe_preserve_order(person.get("facts", []) or []),
                     relationships=rels or [],
                     last_seen_ts=float(person.get("last_seen_ts", 0.0) or 0.0),
@@ -252,12 +295,57 @@ class Neo4jKnowledgeStore(KnowledgeStore):
                 profile = PersonProfile(
                     user_id=person.get("user_id"),
                     name=person.get("name", ""),
+                    aliases=_dedupe_preserve_order(person.get("aliases", []) or []),
                     facts=_dedupe_preserve_order(person.get("facts", []) or []),
                     relationships=rels or [],
                     last_seen_ts=float(person.get("last_seen_ts", 0.0) or 0.0),
                 )
                 profiles[profile.user_id] = profile
         return profiles
+
+    def fetch_people_name_index(self) -> List[PersonNameIndexEntry]:
+        query = """
+        MATCH (p:Person)
+        WHERE p.user_id IS NOT NULL AND trim(p.user_id) <> ""
+        RETURN p.user_id AS user_id,
+               p.name AS name,
+               coalesce(p.aliases, []) AS aliases
+        """
+        entries: List[PersonNameIndexEntry] = []
+        with self._session() as session:
+            for record in session.run(query):
+                user_id = str(record.get("user_id") or "").strip()
+                if not user_id:
+                    continue
+                names: List[str] = []
+                seen: set[str] = set()
+                for value in [record.get("name", "")] + list(record.get("aliases", []) or []):
+                    text = str(value or "").strip()
+                    if not text:
+                        continue
+                    key = text.casefold()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    names.append(text)
+                if names:
+                    entries.append(PersonNameIndexEntry(user_id=user_id, names=names))
+        return entries
+
+    @staticmethod
+    def _name_lower_owner_user_id(session: Any, name_lower: str) -> str:
+        if not name_lower:
+            return ""
+        result = session.run(
+            "MATCH (p:Person {name_lower: $name_lower}) "
+            "RETURN coalesce(p.user_id, '') AS user_id "
+            "LIMIT 1",
+            name_lower=name_lower,
+        )
+        record = result.single()
+        if not record:
+            return ""
+        return str(record.get("user_id", "") or "")
 
     def upsert_person_facts(self, user_id: str, name: str, facts: List[str]) -> None:
         name = name or ""
@@ -286,7 +374,10 @@ class Neo4jKnowledgeStore(KnowledgeStore):
         merge_by_id = """
         MERGE (p:Person {user_id: $user_id})
         SET p.name = CASE WHEN $name <> "" THEN $name ELSE p.name END,
-            p.name_lower = CASE WHEN $name_lower <> "" THEN $name_lower ELSE p.name_lower END,
+            p.name_lower = CASE
+                WHEN $set_name_lower AND $name_lower <> "" THEN $name_lower
+                ELSE p.name_lower
+            END,
             p.aliases = reduce(acc = [], x IN coalesce(p.aliases, []) + $aliases |
                 CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END),
             p.facts = reduce(acc = [], x IN coalesce(p.facts, []) + $facts |
@@ -298,6 +389,7 @@ class Neo4jKnowledgeStore(KnowledgeStore):
             END
         """
         with self._session() as session:
+            conflicting_owner = ""
             if user_id and name_lower:
                 result = session.run(
                     claim_by_name,
@@ -311,11 +403,22 @@ class Neo4jKnowledgeStore(KnowledgeStore):
                 )
                 if result.peek() is not None:
                     return
+                conflicting_owner = self._name_lower_owner_user_id(session, name_lower)
+            set_name_lower = not conflicting_owner or conflicting_owner == user_id
+            if conflicting_owner and conflicting_owner != user_id:
+                logger.warning(
+                    "Neo4j name_lower conflict while upserting person facts for user_id=%s name_lower=%s; "
+                    "owned by user_id=%s. Preserving existing owner.",
+                    user_id,
+                    name_lower,
+                    conflicting_owner,
+                )
             session.run(
                 merge_by_id,
                 user_id=user_id,
                 name=name,
                 name_lower=name_lower,
+                set_name_lower=set_name_lower,
                 aliases=alias_values,
                 facts=facts,
                 has_new_facts=has_new_facts,
@@ -339,10 +442,27 @@ class Neo4jKnowledgeStore(KnowledgeStore):
         name_lower = name.strip().lower()
         alias_values = [name] if name else []
         last_seen_ts = float(timestamp or 0.0)
+        claim_by_name = """
+        MATCH (p:Person {name_lower: $name_lower})
+        WHERE $name_lower <> "" AND (p.user_id IS NULL OR p.user_id = "")
+        SET p.user_id = $user_id,
+            p.name = CASE WHEN $name <> "" THEN $name ELSE p.name END,
+            p.name_lower = CASE WHEN $name_lower <> "" THEN $name_lower ELSE p.name_lower END,
+            p.aliases = reduce(acc = [], x IN coalesce(p.aliases, []) + $aliases |
+                CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END),
+            p.last_seen_ts = CASE
+                WHEN coalesce(p.last_seen_ts, 0.0) < $last_seen_ts THEN $last_seen_ts
+                ELSE coalesce(p.last_seen_ts, 0.0)
+            END
+        RETURN p
+        """
         query = """
         MERGE (p:Person {user_id: $user_id})
         SET p.name = CASE WHEN $name <> "" THEN $name ELSE p.name END,
-            p.name_lower = CASE WHEN $name_lower <> "" THEN $name_lower ELSE p.name_lower END,
+            p.name_lower = CASE
+                WHEN $set_name_lower AND $name_lower <> "" THEN $name_lower
+                ELSE p.name_lower
+            END,
             p.aliases = reduce(acc = [], x IN coalesce(p.aliases, []) + $aliases |
                 CASE WHEN x IS NULL OR trim(x) = "" OR x IN acc THEN acc ELSE acc + x END),
             p.last_seen_ts = CASE
@@ -351,11 +471,34 @@ class Neo4jKnowledgeStore(KnowledgeStore):
             END
         """
         with self._session() as session:
+            conflicting_owner = ""
+            if name_lower:
+                result = session.run(
+                    claim_by_name,
+                    user_id=user_id,
+                    name=name,
+                    name_lower=name_lower,
+                    aliases=alias_values,
+                    last_seen_ts=last_seen_ts,
+                )
+                if result.peek() is not None:
+                    return
+                conflicting_owner = self._name_lower_owner_user_id(session, name_lower)
+            set_name_lower = not conflicting_owner or conflicting_owner == user_id
+            if conflicting_owner and conflicting_owner != user_id:
+                logger.warning(
+                    "Neo4j name_lower conflict while updating last_seen for user_id=%s name_lower=%s; "
+                    "owned by user_id=%s. Preserving existing owner.",
+                    user_id,
+                    name_lower,
+                    conflicting_owner,
+                )
             session.run(
                 query,
                 user_id=user_id,
                 name=name,
                 name_lower=name_lower,
+                set_name_lower=set_name_lower,
                 aliases=alias_values,
                 last_seen_ts=last_seen_ts,
             )

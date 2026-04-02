@@ -8,7 +8,7 @@ from typing import Any
 
 from .models import ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 from .name_utils import split_display_and_username
-from .time_utils import format_pacific_time
+from .time_utils import format_pacific_time, get_pacific_time
 
 _UUID_LIKE_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -89,14 +89,23 @@ class PromptManager:
     def continuity_summary_system_prompt() -> str:
         return (
             "Update the continuity summary by combining 'existing_summary' (older history) and 'messages' (new events). "
-            "Use message timestamps to keep strict chronology and temporal language. "
-            "If newer events supersede earlier states, keep the earlier event as past context and reflect the latest current state. "
-            "Use temporal phrasing such as earlier/later/now when it improves clarity. "
-            "Write a short-story style summary in about 4-8 sentences, clear about who did what and why. "
-            "Preserve unresolved questions, promises, and emotional shifts so later responses can continue naturally. "
-            "End with exactly one line in this format: "
-            "'Most recent confirmed (as of <timestamp>): <state>'. "
-            "Use the latest timestamp from 'messages' when available, otherwise use 'new_messages_time_range.end'. "
+            "Rewrite the entire summary from scratch as concise plain text for future model context. "
+            "Output MUST use these exact section headers in this order: "
+            "'PRIOR CONTEXT', 'TIMELINE', 'CURRENT STATE', 'OPEN THREADS', 'MOST RECENT CONFIRMED'. "
+            "Under 'PRIOR CONTEXT', keep only durable older context that is still relevant, or write '- none'. "
+            "Under 'TIMELINE', write 1-8 bullets in strict chronological order using message timestamps, "
+            "formatted as '[<timestamp_unix>] <event or state change>'. "
+            "Under 'CURRENT STATE', list only the latest confirmed state that is still true. "
+            "Under 'OPEN THREADS', list unresolved questions, promises, tensions, or write '- none'. "
+            "Under 'MOST RECENT CONFIRMED', write exactly two bullets: "
+            "'- as_of: <latest timestamp_unix>' and '- state: <latest confirmed state>'. "
+            "Separate past events from current truth clearly. "
+            "If newer events supersede earlier states, keep the earlier event in 'TIMELINE' and reflect the latest truth in 'CURRENT STATE'. "
+            "Use the provided sender labels exactly as written; do not replace them with generic labels like 'User' or 'Assistant' unless the input itself uses those labels. "
+            "When evidence is sparse or ambiguous, prefer omission over guessing. "
+            "Do not infer relationships, identities, motives, or off-screen events unless the messages explicitly support them. "
+            "If a new message is only a greeting, emote, or short utterance, summarize only that minimal confirmed event. "
+            "Keep it concise, factual, and free of narrative filler. "
             "Do not invent events."
         )
 
@@ -187,20 +196,22 @@ class PromptManager:
         overflow: list[InboundChat] | None,
         incoming_batch: list[dict[str, Any]] | None,
     ) -> str:
+        now = time.time()
+        stable_people_facts, people_recency = self.split_people_facts_prompt_sections(context.people_facts, now_ts=now)
+        stable_agent_state, agent_timing = self.split_agent_state_prompt_sections(context.agent_state)
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
         recent_time_range = {
             "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
             "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
         participants_payload = self._stable_participants_payload(context.participants)
-        now = time.time()
         static_payload = {
             "user_id": context.user_id,
             "participants": participants_payload,
-            "people_facts": self._canonicalize_for_prompt(context.people_facts),
+            "people_facts": stable_people_facts,
             "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
-            "agent_state": self._canonicalize_for_prompt(context.agent_state),
+            "agent_state": stable_agent_state,
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
             "environment": {
                 "location": context.environment.location,
@@ -220,6 +231,8 @@ class PromptManager:
                 context.environment.avatar_position,
             ),
             "incoming": self.chat_payload(chat),
+            "people_recency": people_recency,
+            "agent_timing": agent_timing,
             "now_timestamp": format_pacific_time(now),
         }
         payload = self._merge_prompt_sections(static_payload, live_payload)
@@ -272,16 +285,7 @@ class PromptManager:
             },
         }
         live_payload = {
-            "messages": [
-                {
-                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
-                    "timestamp_unix": float(msg.timestamp or 0.0),
-                    "sender": msg.sender_name,
-                    "sender_id": msg.sender_id,
-                    "text": msg.text,
-                }
-                for msg in ordered_chats
-            ],
+            "messages": [self._summary_message_payload(msg) for msg in ordered_chats],
         }
         return self._serialize_payload(self._merge_prompt_sections(static_payload, live_payload))
 
@@ -294,16 +298,7 @@ class PromptManager:
             },
         }
         live_payload = {
-            "messages": [
-                {
-                    "timestamp": format_pacific_time(float(msg.timestamp or 0.0)),
-                    "timestamp_unix": float(msg.timestamp or 0.0),
-                    "sender": msg.sender_name,
-                    "sender_id": msg.sender_id,
-                    "text": msg.text,
-                }
-                for msg in ordered_chats
-            ],
+            "messages": [self._summary_message_payload(msg) for msg in ordered_chats],
         }
         return self._serialize_payload(self._merge_prompt_sections(static_payload, live_payload))
 
@@ -312,21 +307,23 @@ class PromptManager:
         context: ConversationContext,
         activity: dict[str, Any],
     ) -> str:
+        now = time.time()
+        stable_people_facts, people_recency = self.split_people_facts_prompt_sections(context.people_facts, now_ts=now)
+        stable_agent_state, agent_timing = self.split_agent_state_prompt_sections(context.agent_state)
         recent_timestamps = [float(m.timestamp or 0.0) for m in context.recent_messages]
         recent_time_range = {
             "start": format_pacific_time(min(recent_timestamps)) if recent_timestamps else "0",
             "end": format_pacific_time(max(recent_timestamps)) if recent_timestamps else "0",
         }
         participants_payload = self._stable_participants_payload(context.participants)
-        now = time.time()
         static_payload = {
             "mode": "autonomous",
             "user_id": context.user_id,
             "participants": participants_payload,
-            "people_facts": self._canonicalize_for_prompt(context.people_facts),
+            "people_facts": stable_people_facts,
             "previously": context.summary,
             "summary_meta": self._canonicalize_for_prompt(context.summary_meta),
-            "agent_state": self._canonicalize_for_prompt(context.agent_state),
+            "agent_state": stable_agent_state,
             "related_experiences": self._canonicalize_for_prompt(context.related_experiences),
             "environment": {
                 "location": context.environment.location,
@@ -339,17 +336,12 @@ class PromptManager:
         live_payload = {
             "recent_time_range": recent_time_range,
             "recent_messages": [self.chat_payload(m) for m in context.recent_messages],
-            "activity": {
-                "seconds_since_activity": activity.get("seconds_since_activity"),
-                "last_message_received_at": format_pacific_time(activity.get("last_inbound_ts")),
-                "last_ai_response_at": format_pacific_time(activity.get("last_response_ts")),
-                "mood": activity.get("mood"),
-                "status": activity.get("status"),
-            },
             "object_proximity": self._object_proximity_overlay(
                 context.environment.objects,
                 context.environment.avatar_position,
             ),
+            "people_recency": people_recency,
+            "agent_timing": agent_timing,
             "now_timestamp": format_pacific_time(now),
         }
         payload = self._merge_prompt_sections(static_payload, live_payload)
@@ -382,6 +374,37 @@ class PromptManager:
             payload["sender_full_name"] = full_name
         return payload
 
+    @classmethod
+    def _summary_message_payload(cls, chat: InboundChat) -> dict[str, Any]:
+        return {
+            "timestamp": format_pacific_time(float(chat.timestamp or 0.0)),
+            "timestamp_unix": float(chat.timestamp or 0.0),
+            "sender": cls._summary_sender_label(chat),
+            "text": chat.text,
+        }
+
+    @classmethod
+    def _summary_sender_label(cls, chat: InboundChat) -> str:
+        raw = chat.raw if isinstance(chat.raw, dict) else {}
+        full_name = (
+            str(raw.get("_sender_full_name") or "")
+            or str(raw.get("from_name") or raw.get("sender_name") or "")
+            or str(chat.sender_name or "")
+        )
+        display_name, username = split_display_and_username(full_name)
+        candidates = [
+            str(raw.get("_sender_username") or ""),
+            username,
+            str(raw.get("_sender_display_name") or ""),
+            display_name,
+            str(chat.sender_name or ""),
+        ]
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value and not _UUID_LIKE_RE.match(value):
+                return value
+        return str(chat.sender_id or "").strip()
+
     @staticmethod
     def participant_payload(participant: Participant) -> dict[str, Any]:
         full_name = str(participant.name or participant.user_id or "")
@@ -403,6 +426,80 @@ class PromptManager:
     @staticmethod
     def _serialize_payload(payload: dict[str, Any]) -> str:
         return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+    @classmethod
+    def split_people_facts_prompt_sections(
+        cls,
+        people_facts: dict[str, Any],
+        now_ts: float | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        stable_profiles: dict[str, Any] = {}
+        recency_profiles: dict[str, Any] = {}
+        reference_ts = float(now_ts if now_ts is not None else time.time())
+        for raw_user_id in sorted((people_facts or {}).keys(), key=lambda item: str(item)):
+            user_id = str(raw_user_id or "").strip()
+            if not user_id:
+                continue
+            raw_profile = people_facts.get(raw_user_id)
+            if not isinstance(raw_profile, dict):
+                stable_profiles[user_id] = cls._canonicalize_for_prompt(raw_profile)
+                continue
+            stable_profile: dict[str, Any] = {}
+            recency_profile: dict[str, Any] = {}
+            last_seen_ts_value = cls._try_float(raw_profile.get("last_seen_ts"))
+            for key, value in raw_profile.items():
+                text_key = str(key or "").strip()
+                if text_key == "last_seen_seconds_ago":
+                    rounded = cls._round_recency_seconds(value)
+                    if rounded is not None:
+                        recency_profile["last_seen_seconds_ago"] = rounded
+                        recency_profile["last_seen_bucket"] = cls._recency_bucket_label(rounded)
+                    continue
+                if text_key == "reappeared_after_seconds":
+                    rounded = cls._round_recency_seconds(value)
+                    if rounded is not None:
+                        recency_profile["reappeared_after_seconds"] = rounded
+                        recency_profile["reappeared_after_bucket"] = cls._recency_bucket_label(rounded)
+                    continue
+                if text_key in {"last_seen_ts", "reappeared_at"}:
+                    continue
+                stable_profile[text_key] = value
+            if last_seen_ts_value is not None and last_seen_ts_value > 0.0:
+                recency_profile["last_seen_at"] = format_pacific_time(last_seen_ts_value)
+                recency_profile["last_seen_day_relation"] = cls._relative_day_label(last_seen_ts_value, reference_ts)
+            stable_profiles[user_id] = cls._canonicalize_for_prompt(stable_profile)
+            if recency_profile:
+                recency_profiles[user_id] = cls._canonicalize_for_prompt(recency_profile)
+        return cls._canonicalize_for_prompt(stable_profiles), cls._canonicalize_for_prompt(recency_profiles)
+
+    @classmethod
+    def split_agent_state_prompt_sections(
+        cls,
+        agent_state: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        stable_state: dict[str, Any] = {}
+        timing_state: dict[str, Any] = {}
+        for key, value in (agent_state or {}).items():
+            text_key = str(key or "").strip()
+            if text_key in {"mood_ts", "status_ts", "last_message_received_at", "last_ai_response_at"}:
+                timing_state[text_key] = value
+                continue
+            if text_key in {"mood_seconds_ago", "status_seconds_ago", "seconds_since_activity", "autonomy_delay_hint_seconds"}:
+                rounded = cls._round_recency_seconds(value)
+                if rounded is None:
+                    continue
+                timing_state[text_key] = rounded
+                if text_key == "seconds_since_activity":
+                    timing_state["seconds_since_activity_bucket"] = cls._recency_bucket_label(rounded)
+                elif text_key == "mood_seconds_ago":
+                    timing_state["mood_age_bucket"] = cls._recency_bucket_label(rounded)
+                elif text_key == "status_seconds_ago":
+                    timing_state["status_age_bucket"] = cls._recency_bucket_label(rounded)
+                elif text_key == "autonomy_delay_hint_seconds":
+                    timing_state["autonomy_delay_hint_bucket"] = cls._recency_bucket_label(rounded)
+                continue
+            stable_state[text_key] = value
+        return cls._canonicalize_for_prompt(stable_state), cls._canonicalize_for_prompt(timing_state)
 
     @classmethod
     def _canonicalize_for_prompt(cls, value: Any) -> Any:
@@ -428,8 +525,20 @@ class PromptManager:
         )
 
     @classmethod
+    def _entity_prompt_payload(cls, entry: Any) -> Any:
+        canonical = cls._canonicalize_for_prompt(entry)
+        if not isinstance(canonical, dict):
+            return canonical
+        entity_id = canonical.get("uuid") or canonical.get("target_uuid")
+        if not entity_id:
+            return canonical
+        cleaned = {key: value for key, value in canonical.items() if key != "target_uuid"}
+        cleaned["uuid"] = entity_id
+        return cls._canonicalize_for_prompt(cleaned)
+
+    @classmethod
     def _stable_entity_list(cls, entries: list[Any]) -> list[Any]:
-        canonical = [cls._canonicalize_for_prompt(entry) for entry in entries]
+        canonical = [cls._entity_prompt_payload(entry) for entry in entries]
 
         def entity_sort_key(item: Any) -> str:
             if isinstance(item, dict):
@@ -462,7 +571,7 @@ class PromptManager:
     def _stable_objects_catalog_payload(cls, entries: list[Any]) -> list[Any]:
         catalog_entries: list[Any] = []
         for entry in entries:
-            canonical = cls._canonicalize_for_prompt(entry)
+            canonical = cls._entity_prompt_payload(entry)
             if not isinstance(canonical, dict):
                 catalog_entries.append(canonical)
                 continue
@@ -579,6 +688,57 @@ class PromptManager:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _round_recency_seconds(cls, value: Any) -> int | None:
+        seconds = cls._try_float(value)
+        if seconds is None:
+            return None
+        seconds = max(0.0, float(seconds))
+        if seconds < 60.0:
+            step = 5.0
+        elif seconds < 300.0:
+            step = 15.0
+        elif seconds < 3600.0:
+            step = 60.0
+        elif seconds < 21600.0:
+            step = 300.0
+        elif seconds < 86400.0:
+            step = 1800.0
+        else:
+            step = 3600.0
+        return int(round(seconds / step) * step)
+
+    @staticmethod
+    def _recency_bucket_label(seconds: int) -> str:
+        if seconds < 30:
+            return "<30s"
+        if seconds < 60:
+            return "<1m"
+        if seconds < 300:
+            return "1-5m"
+        if seconds < 900:
+            return "5-15m"
+        if seconds < 3600:
+            return "15-60m"
+        if seconds < 21600:
+            return "1-6h"
+        if seconds < 86400:
+            return "6-24h"
+        if seconds < 604800:
+            return "1-7d"
+        return "7d+"
+
+    @staticmethod
+    def _relative_day_label(event_ts: float, now_ts: float) -> str:
+        event_day = get_pacific_time(event_ts).date()
+        current_day = get_pacific_time(now_ts).date()
+        delta_days = (current_day - event_day).days
+        if delta_days <= 0:
+            return "today"
+        if delta_days == 1:
+            return "yesterday"
+        return "older"
 
     @classmethod
     def _filter_facts_entities(
@@ -717,10 +877,22 @@ class PromptManager:
             "- All internal monologue and persona planning must go in 'thought_process'. All outward behavior (speech/emotes) must go in 'actions'.\n"
             "- Use 'CHAT' for dialogue and 'EMOTE' for physical descriptions or internal states expressed outwardly.\n"
             "- For complex maneuvers (e.g., walking while talking), emit multiple actions in a single response.\n"
-            "- When 'incoming_batch' is provided, prioritize the 'latest_text' but use earlier messages for context or corrections.\n\n"
+            "- When 'incoming_batch' is provided, prioritize the 'latest_text' but use earlier messages for context or corrections.\n"
+            "- Prioritize meaningful response content over decorative filler.\n"
+            "- Do not pad replies with repetitive micro-actions, passive biological processes, or low-value idle descriptions.\n"
+            "- Breathing, blinking, resting posture, and similar background processes are implicit and should usually not be described unless narratively meaningful.\n"
+            "- Avoid repeating the same sound, gesture, emotional cue, or descriptive phrase across nearby turns.\n"
+            "- If the next planned response is substantially similar to a recent response, either say less, choose a different meaningful response, or return no actions.\n"
+            "- Each non-empty response should add at least one meaningful contribution, such as dialogue, reaction, decision, emotional shift, scene change, clarification, or purposeful action.\n"
+            "- Only produce output when it adds meaningful new information, action, or reaction to the scene.\n"
+            "- If the next output would only restate, prolong, or decorate what is already established, emit no actions.\n"
+            "- When the scene is stable and no meaningful response is needed, prefer no actions over filler.\n"
+            "- Keep emotes concise and relevant. Do not over-describe tiny movements unless they materially affect the scene or characterization.\n\n"
             "# TECHNICAL CONSTRAINTS\n"
             "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
             "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
+            "- For TOUCH, SIT, and FACE_TARGET, choose a listed entity from 'environment' and copy that entity's "
+            "'uuid' into the action field 'target_uuid'. If the entity only has 'target_uuid', use that value.\n"
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
             "- DO NOT mix multiple commands into one action item.\n"
@@ -735,6 +907,8 @@ class PromptManager:
             "- For current reality, prioritize 'incoming', 'recent_messages', 'environment', and explicit timestamps.\n"
             "- If 'summary_meta.range_age_seconds' is high (for example >1800), treat state claims in 'previously' as stale unless recent evidence confirms them.\n"
             "- Suggest 'participant_hints' for new or important individuals mentioned in the chat.\n"
+            "- Do not continue repetitive idle patterns merely because they appear in summaries or recent messages.\n"
+            "- If memory shows repeated low-information behavior, treat that as a pattern to avoid rather than a style to imitate, unless the current interaction specifically calls for it.\n"
             "- Optional scheduler override: you may set 'autonomy_decision' ([act, wait, sleep]) and "
             "'next_delay_seconds' to adjust future autonomous cadence after this interaction."
         ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting (like ```json) outside the JSON object."
@@ -781,10 +955,25 @@ class PromptManager:
             "- Never output internal monologue, private reasoning, or narration about waiting.\n"
             "- When you 'CHAT', speak outwardly to nearby people or the environment.\n"
             "- Do not refer to yourself in the third person.\n"
+            "- In stable scenes, prefer silence over filler.\n"
+            "- Do not narrate passive biological processes or low-value idle details just to show continued presence.\n"
+            "- Breathing, blinking, resting posture, sleeping position, and similar background processes are implicit and should usually not be described unless narratively meaningful.\n"
+            "- If the scene is stable and there has been no recent interaction from participants and no meaningful environmental change, prefer autonomy_decision 'wait' or 'sleep' instead of producing actions.\n"
+            "- If the persona is asleep, resting, inactive, or otherwise in a stable non-interactive state, strongly prefer autonomy_decision 'sleep'.\n"
+            "- Occasional minor idle behaviors may occur during sleep, rest, or inactivity, but they should be rare.\n"
+            "- Do not produce minor idle behaviors on frequent repeated checks.\n"
+            "- Do not repeat the same or substantially similar sound, emote, or action across successive autonomous checks.\n"
+            "- If the next planned output is substantially similar to a recent output, choose autonomy_decision 'wait' or 'sleep' and emit no actions.\n"
+            "- Only produce output when it adds meaningful new information, action, or reaction to the scene.\n"
+            "- If the next output would only restate, prolong, or decorate what is already established, emit no actions.\n"
+            "- Prioritize recent_messages, activity, environment, and current state over older patterns or summaries.\n"
+            "- If summaries or previous messages describe repeated idle behavior, do not continue that pattern unless there is a new meaningful trigger.\n"
             "\n"
             "# TECHNICAL CONSTRAINTS\n"
             "- OUTPUT SCHEMA: You must strictly adhere to the provided JSON schema.\n"
             "- ACTION TYPES: Only use [CHAT, EMOTE, MOVE, TOUCH, SIT, STAND, FACE_TARGET].\n"
+            "- For TOUCH, SIT, and FACE_TARGET, choose a listed entity from 'environment' and copy that entity's "
+            "'uuid' into the action field 'target_uuid'. If the entity only has 'target_uuid', use that value.\n"
             "- ACTION KEYS: Every action item MUST use the key 'type'. Never use 'command' or 'action' as keys.\n"
             "- PARAMETERS: Do not place command types inside the 'parameters' dictionary.\n"
             "- CHAT CONTENT: Dialogue only. Do not include action narration or *asterisk* emote markup in CHAT.\n"
@@ -797,8 +986,10 @@ class PromptManager:
             "- 'wait': emit no actions and choose a suitable 'next_delay_seconds'.\n"
             "- 'sleep': emit no actions and choose a longer 'next_delay_seconds'.\n"
             "- Include 'next_delay_seconds' whenever possible so the scheduler can pick a natural next check.\n"
-            "- Include mood (short label) and status (brief current activity)."
-        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting outside the JSON object."
+            "- Include mood (short label) and status (brief current activity).\n"
+            "- If autonomy_decision is 'act' or 'wait', set next_delay_seconds between 10 and 60.\n"
+            "- If autonomy_decision is 'sleep', you MUST set next_delay_seconds to a very long delay appropriate for the stable state, usually between 1800 and 7200 seconds.\n"
+        ) + "\n\n# IMPORTANT: RESPONSE FORMAT\n- You must respond ONLY with a valid JSON object matching the schema.\n- DO NOT include any preamble, conversational filler, or markdown formatting (like ```json) outside the JSON object." 
 
     @staticmethod
     def _merge_prompt_sections(*sections: dict[str, Any]) -> dict[str, Any]:

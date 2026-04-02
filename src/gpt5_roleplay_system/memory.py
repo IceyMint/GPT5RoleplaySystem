@@ -76,29 +76,10 @@ class MemoryCompressor:
 
 class SimpleMemoryCompressor(MemoryCompressor):
     def compress(self, existing_summary: str, messages: Iterable[MemoryItem]) -> str:
-        snippets: List[str] = []
-        for message in messages:
-            sender = (message.sender_name or message.sender_id or "Someone").strip() or "Someone"
-            text = " ".join(str(message.text or "").strip().split())
-            if not text:
-                continue
-            if len(text) > 140:
-                text = text[:137] + "..."
-            snippets.append(f"{sender} said \"{text}\".")
-        if not snippets:
-            return existing_summary.strip()
-        beat_limit = 8
-        lead = snippets[0]
-        tail = snippets[1:beat_limit]
-        if tail:
-            narrative = " ".join([lead] + [f"Then {beat[0].lower() + beat[1:]}" for beat in tail if beat])
-        else:
-            narrative = lead
-        if len(snippets) > beat_limit:
-            narrative = f"{narrative} The conversation continued in the same thread."
-        if existing_summary and existing_summary.strip():
-            return f"{existing_summary.strip()}\n\n{narrative}".strip()
-        return narrative.strip()
+        # Fallbacks that generate naive summaries have been removed to prevent memory poisoning.
+        # This implementation is now a no-op fallback, meaning only real LLM summaries
+        # should update the summary property.
+        return existing_summary.strip() if existing_summary else ""
 
 
 class ConversationMemory:
@@ -183,10 +164,20 @@ class ConversationMemory:
         self._overflow = list(items) + self._overflow
 
     def compress_overflow(self, overflow: List[MemoryItem] | None = None) -> None:
-        items = overflow if overflow is not None else self._overflow
+        items = list(overflow) if overflow is not None else list(self._overflow)
         if not items:
             return
-        self._summary = self._compressor.compress(self._summary, items)
+        previous_summary = self._summary.strip() if self._summary else ""
+        candidate_summary = self._compressor.compress(self._summary, items)
+        cleaned_summary = candidate_summary.strip() if candidate_summary else ""
+        if not cleaned_summary or cleaned_summary == previous_summary:
+            # Don't claim timestamp coverage for drained items unless the summary text
+            # actually advanced. This keeps no-op/simple compressors from causing
+            # permanent overflow data loss.
+            if overflow is not None:
+                self.requeue_overflow(items)
+            return
+        self._summary = cleaned_summary
         timestamps = [float(item.timestamp or 0.0) for item in items]
         self._update_summary_meta(timestamps, time.time())
         if overflow is None:
@@ -222,12 +213,15 @@ class ConversationMemory:
             return
         overflow = self._recent[:split_index]
         self._recent = self._recent[split_index:]
-        if self._defer_compression:
-            self._overflow.extend(overflow)
-        else:
-            self._summary = self._compressor.compress(self._summary, overflow)
-            timestamps = [float(item.timestamp or 0.0) for item in overflow]
-            self._update_summary_meta(timestamps, time.time())
+        
+        # We no longer automatically compress here to avoid generating naive/fake summaries
+        # that poison the context window. We accumulate in the overflow buffer instead.
+        self._overflow.extend(overflow)
+        
+        # Enforce hard limit on overflow to avoid unbounded memory growth
+        MAX_OVERFLOW = 200
+        if len(self._overflow) > MAX_OVERFLOW:
+            self._overflow = self._overflow[-MAX_OVERFLOW:]
 
     def _update_summary_meta(self, timestamps: List[float], now_ts: float) -> None:
         valid = [float(ts) for ts in timestamps if float(ts or 0.0) > 0.0]

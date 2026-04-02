@@ -1,7 +1,9 @@
 import asyncio
 import json
+from unittest.mock import patch
 
 from gpt5_roleplay_system.llm import (
+    EchoLLMClient,
     OpenRouterLLMClient,
     PromptCacheStats,
     StructuredAction,
@@ -197,12 +199,21 @@ def test_system_prompt_enforces_chat_emote_split_rules():
     assert "do not wrap with surrounding asterisks" in prompt
 
 
+def test_system_prompt_maps_entity_uuid_to_action_target_uuid():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    prompt = client._system_prompt()
+    assert "For TOUCH, SIT, and FACE_TARGET" in prompt
+    assert "'uuid' into the action field 'target_uuid'" in prompt
+
+
 def test_system_prompt_includes_closure_progression_rules():
     client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     prompt = client._system_prompt()
     assert "Keep strict persona voice" in prompt
     assert "only closes the previous exchange" in prompt
     assert "return an empty actions array" in prompt
+    assert "Only produce output when it adds meaningful new information, action, or reaction to the scene." in prompt
+    assert "If the next output would only restate, prolong, or decorate what is already established, emit no actions." in prompt
 
 
 def test_system_prompt_marks_previously_as_historical_context():
@@ -217,6 +228,15 @@ def test_autonomous_system_prompt_marks_previously_as_historical_context():
     prompt = client._autonomous_system_prompt()
     assert "Treat 'previously' as historical recap" in prompt
     assert "avoid acting on 'previously' alone" in prompt
+    assert "Only produce output when it adds meaningful new information, action, or reaction to the scene." in prompt
+    assert "If the next output would only restate, prolong, or decorate what is already established, emit no actions." in prompt
+
+
+def test_autonomous_system_prompt_maps_entity_uuid_to_action_target_uuid():
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+    prompt = client._autonomous_system_prompt()
+    assert "For TOUCH, SIT, and FACE_TARGET" in prompt
+    assert "'uuid' into the action field 'target_uuid'" in prompt
 
 
 def test_format_context_omits_persona_identity_fields():
@@ -354,6 +374,8 @@ def test_format_context_pushes_live_turn_fields_to_end_for_prefix_caching():
         "incoming_batch",
         "object_proximity",
         "incoming",
+        "people_recency",
+        "agent_timing",
         "now_timestamp",
     ]
 
@@ -399,19 +421,73 @@ def test_format_autonomous_context_pushes_live_fields_to_end_for_prefix_caching(
         "environment",
         "recent_time_range",
         "recent_messages",
-        "activity",
         "object_proximity",
+        "people_recency",
+        "agent_timing",
         "now_timestamp",
     ]
+    assert "activity" not in payload
+
+
+def test_format_context_moves_recency_fields_out_of_stable_people_facts_and_agent_state():
+    env = EnvironmentSnapshot(location="Test Zone")
+    context = ConversationContext(
+        persona="isabella.elara",
+        user_id="ai-uuid",
+        environment=env,
+        participants=[Participant(user_id="user-2", name="Evie")],
+        people_facts={
+            "user-2": {
+                "name": "Evie",
+                "facts": ["likes tea"],
+                "last_seen_ts": 999_813.0,
+                "last_seen_seconds_ago": 187.0,
+                "reappeared_after_seconds": 7200.0,
+            }
+        },
+        recent_messages=[],
+        summary="Earlier summary",
+        related_experiences=[],
+        summary_meta={},
+        agent_state={
+            "mood": "curious",
+            "status": "waiting",
+            "seconds_since_activity": 187.2,
+            "last_message_received_at": "2026-03-06 08:00:00",
+            "mood_seconds_ago": 61.1,
+        },
+    )
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
+
+    with patch("gpt5_roleplay_system.llm_prompts.time.time", return_value=1_000_000.0):
+        payload = json.loads(client._format_context(chat, context, None, None))
+
+    assert payload["people_facts"]["user-2"] == {"facts": ["likes tea"], "name": "Evie"}
+    assert payload["people_recency"]["user-2"]["last_seen_seconds_ago"] == 180
+    assert payload["people_recency"]["user-2"]["last_seen_bucket"] == "1-5m"
+    assert payload["people_recency"]["user-2"]["last_seen_at"]
+    assert payload["people_recency"]["user-2"]["last_seen_day_relation"] == "today"
+    assert payload["people_recency"]["user-2"]["reappeared_after_seconds"] == 7200
+    assert payload["people_recency"]["user-2"]["reappeared_after_bucket"] == "1-6h"
+    assert payload["agent_state"] == {"mood": "curious", "status": "waiting"}
+    assert payload["agent_timing"]["seconds_since_activity"] == 180
+    assert payload["agent_timing"]["seconds_since_activity_bucket"] == "1-5m"
+    assert payload["agent_timing"]["mood_seconds_ago"] == 60
+    assert payload["agent_timing"]["mood_age_bucket"] == "1-5m"
 
 
 def test_format_context_separates_stable_object_catalog_from_dynamic_proximity():
     env = EnvironmentSnapshot(
         location="Test Zone",
         avatar_position="(0,0,0)",
+        agents=[
+            {"target_uuid": "agent-b", "name": "B"},
+            {"uuid": "agent-a", "target_uuid": "agent-a", "name": "A"},
+        ],
         objects=[
-            {"uuid": "obj-b", "name": "B", "distance": 1.2, "position": "(1.2,0,0)", "kind": "chair"},
-            {"uuid": "obj-a", "name": "A", "distance": 5.0, "position": "(5,0,0)", "kind": "table"},
+            {"target_uuid": "obj-b", "name": "B", "distance": 1.2, "position": "(1.2,0,0)", "kind": "chair"},
+            {"uuid": "obj-a", "target_uuid": "obj-a", "name": "A", "distance": 5.0, "position": "(5,0,0)", "kind": "table"},
         ],
     )
     context = ConversationContext(
@@ -434,6 +510,11 @@ def test_format_context_separates_stable_object_catalog_from_dynamic_proximity()
     stable_objects = payload["environment"]["objects"]
     assert [obj.get("uuid") for obj in stable_objects] == ["obj-a", "obj-b"]
     assert all("distance" not in obj for obj in stable_objects)
+    assert all("target_uuid" not in obj for obj in stable_objects)
+
+    stable_agents = payload["environment"]["agents"]
+    assert [agent.get("uuid") for agent in stable_agents] == ["agent-a", "agent-b"]
+    assert all("target_uuid" not in agent for agent in stable_agents)
 
     proximity = payload["object_proximity"]
     assert [obj.get("object_id") for obj in proximity] == ["obj-b", "obj-a"]
@@ -629,13 +710,22 @@ def test_summarize_payload_includes_existing_summary_and_timestamps():
     assert payload["new_messages_time_range"]["start"] != "0"
     assert payload["new_messages_time_range"]["end"] != "0"
     assert payload["messages"][0]["timestamp_unix"] == 100.0
-    assert payload["messages"][0]["sender_id"] == "user-1"
+    assert payload["messages"][0]["sender"] == "User One"
     assert payload["messages"][1]["timestamp_unix"] == 120.0
-    assert payload["messages"][1]["sender_id"] == "user-2"
-    assert "Most recent confirmed (as of <timestamp>)" in client.captured["system_prompt"]
+    assert payload["messages"][1]["sender"] == "User Two"
+    assert "sender_id" not in payload["messages"][0]
+    assert "sender_id" not in payload["messages"][1]
+    assert "PRIOR CONTEXT" in client.captured["system_prompt"]
+    assert "TIMELINE" in client.captured["system_prompt"]
+    assert "CURRENT STATE" in client.captured["system_prompt"]
+    assert "OPEN THREADS" in client.captured["system_prompt"]
+    assert "MOST RECENT CONFIRMED" in client.captured["system_prompt"]
+    assert "Rewrite the entire summary from scratch" in client.captured["system_prompt"]
+    assert "do not replace them with generic labels like 'User'" in client.captured["system_prompt"]
+    assert "prefer omission over guessing" in client.captured["system_prompt"]
 
 
-def test_summarize_skips_when_messages_are_not_newer_than_summary_as_of():
+def test_summarize_overflow_does_not_parse_legacy_footer_from_summary_text():
     class CaptureClient(OpenRouterLLMClient):
         def __init__(self) -> None:
             self._api_key = "test-key"
@@ -646,7 +736,7 @@ def test_summarize_skips_when_messages_are_not_newer_than_summary_as_of():
 
         def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
             self.called = True
-            return "should not be used"
+            return "updated summary"
 
     client = CaptureClient()
     summary = (
@@ -659,8 +749,8 @@ def test_summarize_skips_when_messages_are_not_newer_than_summary_as_of():
     ]
     result = asyncio.run(client.summarize_overflow(summary, messages))
 
-    assert result == summary
-    assert client.called is False
+    assert result == "updated summary"
+    assert client.called is True
 
 
 def test_summarize_episode_uses_dedicated_prompt_and_payload():
@@ -695,8 +785,49 @@ def test_summarize_episode_uses_dedicated_prompt_and_payload():
     assert payload["episode_time_range"]["start"] != "0"
     assert payload["episode_time_range"]["end"] != "0"
     assert payload["messages"][0]["timestamp_unix"] == 100.0
+    assert payload["messages"][0]["sender"] == "User One"
     assert payload["messages"][1]["timestamp_unix"] == 120.0
+    assert payload["messages"][1]["sender"] == "User Two"
+    assert "sender_id" not in payload["messages"][0]
+    assert "sender_id" not in payload["messages"][1]
     assert "episodic memory summary" in client.captured["system_prompt"]
+
+
+def test_summarize_payload_prefers_human_sender_label_over_uuid():
+    class CaptureClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._api_key = "test-key"
+            self._summary_model = "summary-model"
+            self._max_tokens = 111
+            self._temperature = 0.5
+            self.captured = {}
+
+        def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
+            self.captured = {
+                "model": model,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            return "summary result"
+
+    sender_uuid = "4b7e7cb8-f2e1-49c9-9a57-aec11ad15535"
+    client = CaptureClient()
+    messages = [
+        InboundChat(
+            text="hello",
+            sender_id=sender_uuid,
+            sender_name=sender_uuid,
+            timestamp=100.0,
+            raw={"_sender_full_name": "Annaïs Allardyce (annina2006)"},
+        )
+    ]
+    asyncio.run(client.summarize_overflow("old summary", messages))
+
+    payload = json.loads(client.captured["user_prompt"])
+    assert payload["messages"][0]["sender"] == "annina2006"
+    assert "sender_id" not in payload["messages"][0]
 
 
 def test_request_bundle_includes_provider_routing_in_extra_body():
@@ -1398,6 +1529,76 @@ def test_request_structured_cached_create_normalizes_singular_fact_field():
     assert parsed.facts[0].facts == ["Full name is Kei Marie Crowley."]
     assert completions.parse_calls == 0
     assert completions.create_calls == 1
+
+
+def test_structured_bundle_accepts_fact_without_user_id():
+    if StructuredBundle is None:
+        return
+
+    parsed = StructuredBundle.model_validate_json(
+        json.dumps(
+            {
+                "actions": [{"type": "CHAT", "content": "Hello"}],
+                "facts": [{"name": "Evie", "facts": ["likes tea"]}],
+            }
+        )
+    )
+
+    assert parsed.actions
+    assert parsed.actions[0].content == "Hello"
+    assert parsed.facts
+    assert parsed.facts[0].user_id == ""
+    assert parsed.facts[0].name == "Evie"
+    assert parsed.facts[0].facts == ["likes tea"]
+
+
+def test_structured_facts_only_accepts_null_user_id():
+    if StructuredFactsOnly is None:
+        return
+
+    parsed = StructuredFactsOnly.model_validate_json(
+        json.dumps(
+            {
+                "facts": [{"user_id": None, "name": "Evie", "facts": ["likes tea"]}],
+            }
+        )
+    )
+
+    assert parsed.facts
+    assert parsed.facts[0].user_id == ""
+    assert parsed.facts[0].name == "Evie"
+    assert parsed.facts[0].facts == ["likes tea"]
+
+
+def test_generate_bundle_records_quality_fallback_when_api_key_missing():
+    client = object.__new__(OpenRouterLLMClient)
+    client._api_key = ""
+    client._fallback = EchoLLMClient()
+    client._bundle_model = "test-bundle-model"
+    client._facts_in_bundle = False
+
+    context = ConversationContext(
+        persona="TestPersona",
+        user_id="ai-1",
+        environment=EnvironmentSnapshot(),
+        participants=[],
+        people_facts={},
+        recent_messages=[],
+        summary="",
+        related_experiences=[],
+    )
+    chat = InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})
+
+    bundle = asyncio.run(client.generate_bundle(chat, context))
+
+    events = client.consume_quality_fallback_events()
+    assert bundle.text == "Echo: hello"
+    assert events
+    assert events[0]["mode"] == "bundle"
+    assert events[0]["reason"] == "missing_api_key"
+    assert events[0]["fallback_client"] == "EchoLLMClient"
+    assert events[0]["model"] == "test-bundle-model"
+    assert client.consume_quality_fallback_events() == []
 
 
 class _Usage:

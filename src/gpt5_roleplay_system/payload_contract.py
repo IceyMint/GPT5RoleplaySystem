@@ -13,10 +13,19 @@ _UUID_LIKE_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     flags=re.IGNORECASE,
 )
+_IGNORED_USER_IDS = frozenset(
+    {
+        "00000000-0000-0000-0000-000000000000",
+    }
+)
 
 
 def looks_like_uuid(value: str) -> bool:
     return bool(_UUID_LIKE_RE.match(str(value or "").strip()))
+
+
+def is_ignored_user_id(user_id: str) -> bool:
+    return str(user_id or "").strip().casefold() in _IGNORED_USER_IDS
 
 
 def canonical_identity_key(user_id: str, name: str) -> str:

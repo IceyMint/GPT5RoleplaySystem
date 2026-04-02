@@ -4,7 +4,8 @@ import asyncio
 import contextlib
 from typing import Any, Dict, List
 
-from .config import EpisodeConfig, FactsConfig
+from .config import EpisodeConfig, FactsConfig, ServerConfig
+from .config_loader import ConfigLoader
 from .llm import LLMClient, RuleBasedLLMClient
 from .memory import ConversationMemory, ExperienceStore, RollingBuffer, SimpleMemoryCompressor
 from .models import Action
@@ -12,6 +13,7 @@ from .name_utils import extract_username
 from .neo4j_store import InMemoryKnowledgeStore, KnowledgeStore
 from .observability import NoOpTracer, Tracer
 from .pipeline import ExperienceIndexProtocol, MessagePipeline
+from .persona_policy import is_chat_and_state_restricted_persona
 from .session_state import SessionStateStore
 
 
@@ -40,6 +42,7 @@ class SessionController:
         facts_config: FactsConfig | None = None,
         episode_config: EpisodeConfig | None = None,
         persona_profiles: Dict[str, str] | None = None,
+        config_path: str = "",
     ) -> None:
         self._persona = persona
         self._user_id = user_id
@@ -55,6 +58,8 @@ class SessionController:
         self._experience_store = ExperienceStore()
         self._episode_config = episode_config or EpisodeConfig()
         self._facts_config = facts_config or FactsConfig()
+        self._config_path = str(config_path or "").strip()
+        self._persona_profiles = persona_profiles if persona_profiles is not None else {}
         self._pipeline = MessagePipeline(
             persona=self._persona,
             user_id=self._user_id,
@@ -78,7 +83,7 @@ class SessionController:
             posture_stale_seconds=posture_stale_seconds,
             facts_config=self._facts_config,
             episode_config=self._episode_config,
-            persona_profiles=persona_profiles or {},
+            persona_profiles=self._persona_profiles,
         )
         self._state_store: SessionStateStore | None = None
         self._state_task: asyncio.Task | None = None
@@ -87,16 +92,20 @@ class SessionController:
     async def process_chat(self, data: Dict[str, Any]) -> List[Action]:
         self._maybe_update_persona_from_payloads([data])
         actions = await self._pipeline.process_chat(data)
+        self._sync_user_id_from_pipeline()
         self._schedule_state_save()
         return actions
 
     async def process_chat_batch(self, batch: List[Dict[str, Any]]) -> List[Action]:
         self._maybe_update_persona_from_payloads(batch)
         actions = await self._pipeline.process_chat_batch(batch)
+        self._sync_user_id_from_pipeline()
         self._schedule_state_save()
         return actions
 
     def update_environment(self, data: Dict[str, Any]) -> None:
+        if is_chat_and_state_restricted_persona(self._persona):
+            self._maybe_update_persona_from_payloads([data])
         self._pipeline.update_environment(data)
 
     def set_persona(self, persona: str) -> None:
@@ -144,7 +153,7 @@ class SessionController:
 
     def _reset_state_store(self) -> None:
         self._schedule_state_save()
-        if not self._episode_config.persist_state:
+        if not self._episode_config.persist_state or is_chat_and_state_restricted_persona(self._persona):
             self._state_store = None
             return
         self._state_store = SessionStateStore(
@@ -157,6 +166,8 @@ class SessionController:
             self._pipeline.restore_state(state)
 
     def _schedule_state_save(self) -> None:
+        if is_chat_and_state_restricted_persona(self._persona):
+            return
         store = self._state_store
         if store is None:
             return
@@ -166,11 +177,29 @@ class SessionController:
         self._state_task = asyncio.create_task(asyncio.to_thread(store.save, snapshot))
 
     def _save_state_now(self) -> None:
+        if is_chat_and_state_restricted_persona(self._persona):
+            return
         store = self._state_store
         if store is None:
             return
         snapshot = self._pipeline.snapshot_state()
         store.save(snapshot)
+
+    def _sync_user_id_from_pipeline(self) -> None:
+        pipeline_user_id = str(self._pipeline.user_id() or "")
+        if not pipeline_user_id or pipeline_user_id == self._user_id:
+            return
+        self._user_id = pipeline_user_id
+        if not self._episode_config.persist_state or is_chat_and_state_restricted_persona(self._persona):
+            self._state_store = None
+            return
+        # Rotate future persistence to the promoted UUID without reloading a different
+        # state file into the active session mid-turn.
+        self._state_store = SessionStateStore(
+            state_dir=self._episode_config.state_dir,
+            persona=self._persona,
+            user_id=self._user_id,
+        )
 
     def _maybe_update_persona_from_payloads(self, payloads: List[Dict[str, Any]]) -> None:
         for payload in payloads:
@@ -186,5 +215,24 @@ class SessionController:
                 name = candidate.strip()
             if not name or name == self._persona:
                 continue
+            self._ensure_persona_profile(name)
             self.set_persona(name)
             break
+
+    def _ensure_persona_profile(self, persona: str) -> None:
+        key = str(persona or "").strip().casefold()
+        if not key or key in self._persona_profiles:
+            return
+        instructions = ""
+        if self._config_path:
+            instructions = ConfigLoader().ensure_persona_profile(
+                self._config_path,
+                persona_name=persona,
+                template_name=ServerConfig().persona,
+            )
+        if not instructions:
+            instructions = str(self._persona_profiles.get(ServerConfig().persona.casefold(), "") or "").strip()
+        if not instructions:
+            return
+        self._persona_profiles[key] = instructions
+        self._pipeline.upsert_persona_profile(persona, instructions)

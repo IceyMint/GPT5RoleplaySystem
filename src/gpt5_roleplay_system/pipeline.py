@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Protocol, Set
 
 from .config import EpisodeConfig, FactsConfig
 from .llm import ExtractedFact, LLMClient, LLMResponseBundle, LLMStateUpdate, ParticipantHint
+from .llm_prompts import PromptManager
 from .memory import (
     ConversationMemory,
     ExperienceRecord,
@@ -36,6 +37,7 @@ from .name_utils import (
 )
 from .payload_contract import (
     canonical_identity_key,
+    is_ignored_user_id,
     is_placeholder_self_id,
     looks_like_uuid,
     normalize_participants,
@@ -45,6 +47,10 @@ from .observability import Tracer
 
 logger = logging.getLogger("gpt5_roleplay_pipeline")
 SUMMARY_BOUNDARY_WARN_EPSILON_SECONDS = 0.001
+REAPPEARANCE_THRESHOLD_SECONDS = 300.0
+REAPPEARANCE_SIGNAL_TTL_SECONDS = 180.0
+MENTION_INDEX_REFRESH_INTERVAL_SECONDS = 120.0
+MENTION_INDEX_MAX_SCAN_WORDS = 8
 
 
 class ExperienceIndexProtocol(Protocol):
@@ -113,6 +119,12 @@ class MessagePipeline:
         self._persona_profiles = {str(k).casefold(): str(v) for k, v in (persona_profiles or {}).items() if k and v}
         # Tracks viewer-provided full names by UUID so we can pass display+username to the LLM.
         self._display_names_by_id: Dict[str, str] = {}
+        self._mention_runtime_names_by_id: Dict[str, Set[str]] = {}
+        self._mention_index_by_phrase: Dict[str, Set[str]] = {}
+        self._mention_index_names_by_id: Dict[str, Set[str]] = {}
+        self._mention_index_max_phrase_words = 1
+        self._mention_index_dirty = True
+        self._mention_index_last_refresh_ts = 0.0
         self._llm_chat_enabled = True
         facts = facts_config or FactsConfig()
         self._facts_enabled = bool(facts.enabled)
@@ -131,6 +143,7 @@ class MessagePipeline:
         self._facts_pending_participants: Dict[str, Participant] = {}
         self._facts_task: asyncio.Task | None = None
         self._last_seen_cache: Dict[str, float] = {}
+        self._reappearance_signals: Dict[str, Dict[str, float]] = {}
         episode = episode_config or EpisodeConfig()
         self._episode_enabled = bool(episode.enabled)
         self._episode_min_messages = max(1, int(episode.min_messages))
@@ -215,6 +228,10 @@ class MessagePipeline:
             "rolling_buffer": self._rolling_buffer.snapshot(),
             "memory": self._memory.snapshot(),
             "facts": self._snapshot_facts_state(),
+            "identity": {
+                "display_names_by_id": dict(self._display_names_by_id),
+                "last_seen_cache": dict(self._last_seen_cache),
+            },
             "environment": {
                 "last_environment_update_ts": self._runtime_state.last_environment_update_ts,
                 "last_posture_update_ts": self._runtime_state.last_posture_update_ts,
@@ -245,6 +262,52 @@ class MessagePipeline:
         memory_state = state.get("memory", {})
         if isinstance(memory_state, dict):
             self._memory.restore(memory_state)
+        identity_state = state.get("identity", {})
+        identity_loaded = False
+        if isinstance(identity_state, dict):
+            names_raw = identity_state.get("display_names_by_id", {})
+            if isinstance(names_raw, dict):
+                self._display_names_by_id = {
+                    str(k): cleaned_name
+                    for k, v in names_raw.items()
+                    if str(k)
+                    and not self._is_ignored_user_id(str(k))
+                    and (cleaned_name := self._clean_name_candidate(v))
+                }
+                identity_loaded = True
+            cache_raw = identity_state.get("last_seen_cache", {})
+            if isinstance(cache_raw, dict):
+                self._last_seen_cache = {
+                    str(k): float(v or 0.0)
+                    for k, v in cache_raw.items()
+                    if str(k) and not self._is_ignored_user_id(str(k))
+                }
+                identity_loaded = True
+        if not identity_loaded:
+            legacy_names = state.get("display_names_by_id", {})
+            if isinstance(legacy_names, dict):
+                self._display_names_by_id = {
+                    str(k): cleaned_name
+                    for k, v in legacy_names.items()
+                    if str(k)
+                    and not self._is_ignored_user_id(str(k))
+                    and (cleaned_name := self._clean_name_candidate(v))
+                }
+            legacy_last_seen = state.get("last_seen_cache", {})
+            if isinstance(legacy_last_seen, dict):
+                self._last_seen_cache = {
+                    str(k): float(v or 0.0)
+                    for k, v in legacy_last_seen.items()
+                    if str(k) and not self._is_ignored_user_id(str(k))
+                }
+        self._mention_runtime_names_by_id = {}
+        self._mention_index_by_phrase = {}
+        self._mention_index_names_by_id = {}
+        self._mention_index_max_phrase_words = 1
+        self._mention_index_dirty = True
+        self._mention_index_last_refresh_ts = 0.0
+        for user_id, full_name in self._display_names_by_id.items():
+            self._remember_runtime_mention_name(user_id, full_name)
         facts_state = state.get("facts", {})
         if isinstance(facts_state, dict):
             self._restore_facts_state(facts_state)
@@ -327,7 +390,7 @@ class MessagePipeline:
         if isinstance(pending_raw, list):
             for item in pending_raw:
                 chat = self._deserialize_inbound_chat_state(item)
-                if chat is None or self._is_self_message(chat):
+                if chat is None or self._is_ignored_message(chat) or self._is_self_message(chat):
                     continue
                 key = self._fact_message_key(chat)
                 if key in self._facts_pending_keys:
@@ -344,7 +407,9 @@ class MessagePipeline:
                     user_id=str(item.get("user_id", "") or ""),
                     name=str(item.get("name", "") or ""),
                 )
-                if self._is_self_participant(participant.user_id, participant.name):
+                if self._is_ignored_user_id(participant.user_id) or self._is_self_participant(
+                    participant.user_id, participant.name
+                ):
                     continue
                 key = self._participant_key(participant.user_id, participant.name)
                 self._facts_pending_participants[key] = participant
@@ -398,7 +463,14 @@ class MessagePipeline:
         )
 
     def update_environment(self, data: Dict[str, Any]) -> None:
-        agents = self._normalize_entities(data.get("agents", []))
+        agents = [
+            agent
+            for agent in self._normalize_entities(data.get("agents", []))
+            if not (
+                isinstance(agent, dict)
+                and self._is_ignored_user_id(str(agent.get("uuid") or agent.get("target_uuid") or ""))
+            )
+        ]
         objects = self._normalize_entities(data.get("objects", []))
         raw_is_sitting = data.get("is_sitting", False)
         if isinstance(raw_is_sitting, str):
@@ -406,12 +478,18 @@ class MessagePipeline:
         else:
             posture_value = bool(raw_is_sitting)
         update_ts = float(data.get("timestamp", time.time()) or time.time())
+        prior_visible_ids = {
+            str(agent.get("uuid") or agent.get("target_uuid") or "")
+            for agent in self._environment.agents
+            if isinstance(agent, dict)
+        }
         for agent in agents:
             if not isinstance(agent, dict):
                 continue
             user_id = str(agent.get("uuid") or agent.get("target_uuid") or "")
             name = str(agent.get("name") or "")
             self._record_display_name(user_id, name)
+        self._update_reappearance_signals_from_agents(agents, update_ts, prior_visible_ids)
         self._update_last_seen_cache_from_agents(agents, update_ts)
         self._schedule_update_last_seen_from_agents(agents, update_ts)
         self._runtime_state.last_environment_update_ts = max(
@@ -440,10 +518,20 @@ class MessagePipeline:
     def set_persona(self, persona: str) -> None:
         self._persona = persona
         self._runtime_state.persona = persona
+        self._mark_mention_index_dirty()
+
+    def upsert_persona_profile(self, persona: str, instructions: str) -> None:
+        key = str(persona or "").strip().casefold()
+        value = str(instructions or "").strip()
+        if not key or not value:
+            return
+        self._persona_profiles[key] = value
+        self._context_builder_component.upsert_persona_profile(persona, value)
 
     def set_user_id(self, user_id: str) -> None:
         self._user_id = user_id
         self._runtime_state.user_id = user_id
+        self._mark_mention_index_dirty()
 
     def set_llm_chat_enabled(self, enabled: bool) -> None:
         self._llm_chat_enabled = bool(enabled)
@@ -452,6 +540,9 @@ class MessagePipeline:
     def llm_chat_enabled(self) -> bool:
         return self._llm_chat_enabled
 
+    def user_id(self) -> str:
+        return self._user_id
+
     async def process_chat(self, data: Dict[str, Any]) -> List[Any]:
         return await self.process_chat_batch([data])
 
@@ -459,6 +550,8 @@ class MessagePipeline:
         chats = [self._context_builder_component.build_chat(item) for item in batch]
         non_self_chats: List[InboundChat] = []
         for chat in chats:
+            if self._is_ignored_message(chat):
+                continue
             if self._is_self_message(chat):
                 self._handle_self_message(chat)
             else:
@@ -485,7 +578,7 @@ class MessagePipeline:
             self._schedule_episode_check()
             return []
 
-        overflow = self._memory.drain_overflow()
+        overflow = self._filter_overflow_against_summary(self._memory.drain_overflow())
         overflow_chats = self._memory_items_to_chats(overflow)
         overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
         recent_chats = self._memory_items_to_chats(self._memory.recent())
@@ -530,6 +623,7 @@ class MessagePipeline:
                 participants,
                 context,
             )
+            self._log_quality_fallbacks()
             self._tracer.log_event(
                 "llm_address_result",
                 {"sender": chat.sender_id or chat.sender_name, "addressed": bool(is_addressed)},
@@ -541,6 +635,7 @@ class MessagePipeline:
             if overflow:
                 if self._summary_strategy == "llm":
                     summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
+                    self._log_quality_fallbacks()
                     if summary_text:
                         self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
                     else:
@@ -556,6 +651,7 @@ class MessagePipeline:
         self._tracer.log_event("llm_prompt_bundle", prompt_payload)
         self._check_payload_contract(mode="chat", payload=prompt_payload)
         bundle = await self._llm.generate_bundle(primary_chat, context, overflow_chats, incoming_batch)
+        self._log_quality_fallbacks()
         override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
             bundle.autonomy_decision,
             bundle.next_delay_seconds,
@@ -571,6 +667,7 @@ class MessagePipeline:
         if overflow:
             if self._summary_strategy == "llm":
                 summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
+                self._log_quality_fallbacks()
                 if summary_text:
                     self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
                 else:
@@ -591,15 +688,22 @@ class MessagePipeline:
     def _build_chat(self, data: Dict[str, Any]) -> InboundChat:
         sender_id_raw = data.get("from_id", data.get("sender_id", ""))
         sender_id = str(sender_id_raw or "")
-        full_name_raw = data.get("from_name", data.get("sender_name", ""))
-        full_name = str(full_name_raw or "")
+        full_name = self._best_available_sender_full_name(data, sender_id)
         display_name, username = split_display_and_username(full_name)
-        sender_username = (username or display_name or full_name or sender_id).strip()
+        sender_username = (
+            self._clean_name_candidate(data.get("sender_username"))
+            or username
+            or self._clean_name_candidate(data.get("sender_name"))
+            or display_name
+            or full_name
+            or sender_id
+        ).strip()
+        sender_display_name = self._clean_name_candidate(data.get("sender_display_name")) or display_name
         if sender_id and full_name:
             self._record_display_name(sender_id, full_name)
         raw_payload = dict(data)
         raw_payload["_sender_full_name"] = full_name
-        raw_payload["_sender_display_name"] = display_name
+        raw_payload["_sender_display_name"] = sender_display_name
         raw_payload["_sender_username"] = sender_username
         return InboundChat(
             text=data.get("text", ""),
@@ -615,6 +719,8 @@ class MessagePipeline:
 
         def add_participant(user_id: str, name: str) -> None:
             if not user_id and not name:
+                return
+            if self._is_ignored_user_id(user_id):
                 return
             if self._is_self_participant(user_id, name):
                 return
@@ -636,6 +742,8 @@ class MessagePipeline:
                 user_id = entry.get("user_id") or entry.get("uuid") or entry.get("target_uuid", "")
                 name = entry.get("name", "")
                 if user_id or name:
+                    if self._is_ignored_user_id(str(user_id or "")):
+                        continue
                     if user_id == chat.sender_id:
                         continue
                     self._record_display_name(str(user_id or ""), str(name or ""))
@@ -644,6 +752,8 @@ class MessagePipeline:
         for agent in self._environment.agents[: self._max_environment_participants]:
             user_id = agent.get("uuid") or agent.get("target_uuid", "")
             name = agent.get("name", "")
+            if self._is_ignored_user_id(str(user_id or "")):
+                continue
             if user_id == chat.sender_id:
                 continue
             self._record_display_name(str(user_id or ""), str(name or ""))
@@ -708,22 +818,25 @@ class MessagePipeline:
                 "match_type": "partial_name",
                 "matched_query": name,
             }
-        mention_tokens = self._mention_lookup_tokens(query)
-        for token in mention_tokens:
-            matches = await asyncio.to_thread(
-                self._knowledge_store.fetch_people_by_partial_name,
-                [token],
+        mention_matches = await asyncio.to_thread(self._resolve_text_mentions, query)
+        mention_user_ids = [user_id for user_id, _matched_query in mention_matches]
+        missing_mentioned_ids = [user_id for user_id in mention_user_ids if user_id and user_id not in people]
+        if missing_mentioned_ids:
+            mentioned_profiles = await asyncio.to_thread(
+                self._knowledge_store.fetch_people,
+                list(dict.fromkeys(missing_mentioned_ids)),
             )
-            if len(matches) != 1:
-                continue
-            user_id, profile = next(iter(matches.items()))
+            for user_id, profile in mentioned_profiles.items():
+                if user_id not in people:
+                    people[user_id] = profile
+        for user_id, matched_query in mention_matches:
             if user_id not in people:
-                people[user_id] = profile
+                continue
             match_metadata.setdefault(
                 user_id,
                 {
                     "match_type": "text_mention",
-                    "matched_query": token,
+                    "matched_query": matched_query,
                 },
             )
         recent = self._memory.recent()
@@ -792,6 +905,9 @@ class MessagePipeline:
                 "last_seen_ts": last_seen_ts,
                 "last_seen_seconds_ago": last_seen_seconds_ago,
             }
+            reappearance_signal = self._active_reappearance_signal(user_id, now_ts)
+            if reappearance_signal is not None:
+                entry["reappeared_after_seconds"] = reappearance_signal
             metadata = match_metadata.get(user_id)
             if metadata:
                 entry.update(metadata)
@@ -941,6 +1057,13 @@ class MessagePipeline:
         return user_id
 
     @staticmethod
+    def _is_ignored_user_id(user_id: str) -> bool:
+        return is_ignored_user_id(user_id)
+
+    def _is_ignored_message(self, chat: InboundChat) -> bool:
+        return self._is_ignored_user_id(str(chat.sender_id or ""))
+
+    @staticmethod
     def _normalize_name(name: str) -> str:
         return normalize_display_name(name)
 
@@ -1056,20 +1179,77 @@ class MessagePipeline:
         return people_facts
 
     def _record_display_name(self, user_id: str, full_name: str) -> None:
-        if not user_id or not full_name:
+        normalized_user_id = str(user_id or "").strip()
+        normalized_full_name = self._clean_name_candidate(full_name)
+        if not normalized_user_id or not normalized_full_name:
             return
-        if self._is_self_participant(user_id, full_name):
+        if self._is_ignored_user_id(normalized_user_id):
             return
-        prior = self._display_names_by_id.get(user_id, "")
+        if self._is_self_participant(normalized_user_id, normalized_full_name):
+            return
+        self._remember_runtime_mention_name(normalized_user_id, normalized_full_name)
+        prior = self._display_names_by_id.get(normalized_user_id, "")
         # Prefer richer full-name strings (e.g., "Display (username)").
-        if not prior or len(full_name) >= len(prior):
-            self._display_names_by_id[user_id] = full_name
+        if not prior or len(normalized_full_name) >= len(prior):
+            self._display_names_by_id[normalized_user_id] = normalized_full_name
             self._runtime_state.display_names_by_id = self._display_names_by_id
 
     def _full_name_for(self, user_id: str, fallback_name: str = "") -> str:
         if user_id and user_id in self._display_names_by_id:
             return self._display_names_by_id[user_id]
         return fallback_name or user_id
+
+    @staticmethod
+    def _clean_name_candidate(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text or looks_like_uuid(text):
+            return ""
+        return text
+
+    def _best_available_sender_full_name(self, data: Dict[str, Any], sender_id: str) -> str:
+        direct_full_name = (
+            self._clean_name_candidate(data.get("from_name"))
+            or self._clean_name_candidate(data.get("sender_full_name"))
+        )
+        if direct_full_name:
+            return direct_full_name
+
+        participants = data.get("participants", [])
+        if sender_id and isinstance(participants, list):
+            for entry in participants:
+                if not isinstance(entry, dict):
+                    continue
+                entry_user_id = str(entry.get("user_id") or entry.get("uuid") or entry.get("target_uuid") or "")
+                if entry_user_id != sender_id:
+                    continue
+                participant_full_name = (
+                    self._clean_name_candidate(entry.get("full_name"))
+                    or self._clean_name_candidate(entry.get("name"))
+                )
+                if participant_full_name:
+                    return participant_full_name
+                participant_display_name = self._clean_name_candidate(entry.get("display_name"))
+                participant_username = self._clean_name_candidate(entry.get("username"))
+                if participant_display_name and participant_username and not name_matches(
+                    participant_display_name, participant_username
+                ):
+                    return f"{participant_display_name} ({participant_username})"
+                participant_name = participant_display_name or participant_username
+                if participant_name:
+                    return participant_name
+
+        cached_full_name = self._clean_name_candidate(self._display_names_by_id.get(sender_id, ""))
+        if cached_full_name:
+            return cached_full_name
+
+        sender_display_name = self._clean_name_candidate(data.get("sender_display_name"))
+        sender_username = (
+            self._clean_name_candidate(data.get("sender_username"))
+            or self._clean_name_candidate(data.get("sender_name"))
+        )
+        if sender_display_name and sender_username and not name_matches(sender_display_name, sender_username):
+            return f"{sender_display_name} ({sender_username})"
+        return sender_display_name or sender_username
 
     def _participant_payload(self, participant: Participant) -> Dict[str, Any]:
         full_name = self._full_name_for(participant.user_id, participant.name)
@@ -1085,13 +1265,19 @@ class MessagePipeline:
         }
 
     def _normalize_participants(self, participants: List[Participant]) -> List[Participant]:
-        raw = [self._participant_payload(participant) for participant in participants]
+        raw = [
+            self._participant_payload(participant)
+            for participant in participants
+            if not self._is_ignored_user_id(participant.user_id)
+        ]
         normalized_payload, _ = normalize_participants(raw)
         normalized: List[Participant] = []
         for entry in normalized_payload:
             user_id = str(entry.get("user_id", "") or "")
             name = str(entry.get("name", "") or "")
             full_name = str(entry.get("full_name", "") or "")
+            if self._is_ignored_user_id(user_id):
+                continue
             if user_id and full_name:
                 self._record_display_name(user_id, full_name)
             normalized.append(Participant(user_id=user_id, name=name))
@@ -1176,27 +1362,81 @@ class MessagePipeline:
                 continue
             user_id = str(agent.get("uuid") or agent.get("target_uuid") or "")
             name = str(agent.get("name") or "")
-            if not user_id or self._is_self_participant(user_id, name):
+            if not user_id or self._is_ignored_user_id(user_id) or self._is_self_participant(user_id, name):
                 continue
             prior = float(self._last_seen_cache.get(user_id, 0.0) or 0.0)
             if ts > prior:
                 self._last_seen_cache[user_id] = ts
 
-    def _update_last_seen_from_agents(self, agents: List[Dict[str, Any]], timestamp: float) -> None:
+    def _update_reappearance_signals_from_agents(
+        self,
+        agents: List[Dict[str, Any]],
+        timestamp: float,
+        prior_visible_ids: Set[str],
+    ) -> None:
         ts = float(timestamp or 0.0)
-        if ts <= 0:
+        if ts <= 0.0:
             return
+        current_visible_ids: Set[str] = set()
         for agent in agents:
             if not isinstance(agent, dict):
                 continue
             user_id = str(agent.get("uuid") or agent.get("target_uuid") or "")
             name = str(agent.get("name") or "")
-            if not user_id or self._is_self_participant(user_id, name):
+            if not user_id or self._is_ignored_user_id(user_id) or self._is_self_participant(user_id, name):
+                continue
+            current_visible_ids.add(user_id)
+            if user_id in prior_visible_ids:
+                continue
+            prior_seen_ts = float(self._last_seen_cache.get(user_id, 0.0) or 0.0)
+            if prior_seen_ts <= 0.0:
+                continue
+            gap_seconds = ts - prior_seen_ts
+            if gap_seconds < REAPPEARANCE_THRESHOLD_SECONDS:
+                continue
+            self._reappearance_signals[user_id] = {
+                "gap_seconds": gap_seconds,
+                "seen_at_ts": ts,
+                "expires_at_ts": ts + REAPPEARANCE_SIGNAL_TTL_SECONDS,
+            }
+        self._prune_reappearance_signals(current_visible_ids, ts)
+
+    def _prune_reappearance_signals(self, visible_ids: Set[str], now_ts: float) -> None:
+        for user_id, payload in list(self._reappearance_signals.items()):
+            expires_at = float(payload.get("expires_at_ts", 0.0) or 0.0)
+            if user_id not in visible_ids or (expires_at > 0.0 and now_ts > expires_at):
+                self._reappearance_signals.pop(user_id, None)
+
+    def _active_reappearance_signal(self, user_id: str, now_ts: float) -> float | None:
+        payload = self._reappearance_signals.get(str(user_id or ""))
+        if not isinstance(payload, dict):
+            return None
+        expires_at = float(payload.get("expires_at_ts", 0.0) or 0.0)
+        if expires_at > 0.0 and now_ts > expires_at:
+            self._reappearance_signals.pop(str(user_id or ""), None)
+            return None
+        gap_seconds = float(payload.get("gap_seconds", 0.0) or 0.0)
+        return gap_seconds if gap_seconds > 0.0 else None
+
+    def _update_last_seen_from_agents(self, agents: List[Dict[str, Any]], timestamp: float) -> None:
+        ts = float(timestamp or 0.0)
+        if ts <= 0:
+            return
+        wrote_updates = False
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            user_id = str(agent.get("uuid") or agent.get("target_uuid") or "")
+            name = str(agent.get("name") or "")
+            if not user_id or self._is_ignored_user_id(user_id) or self._is_self_participant(user_id, name):
                 continue
             try:
                 self._knowledge_store.update_last_seen(user_id, name, ts)
+                wrote_updates = True
             except Exception:
                 continue
+        if wrote_updates:
+            self._mark_mention_index_dirty()
 
     def _schedule_update_last_seen_from_agents(self, agents: List[Dict[str, Any]], timestamp: float) -> None:
         if not agents:
@@ -1213,13 +1453,26 @@ class MessagePipeline:
         for item in items:
             sender_id = str(item.sender_id or "")
             is_ai_marker = sender_id == "ai"
+            if not is_ai_marker and self._is_ignored_user_id(sender_id):
+                continue
             sender_id_out = self._self_sender_id_for_payload() if is_ai_marker else sender_id
-            sender_name_out = self._persona if is_ai_marker else (sender_id or str(item.sender_name or ""))
             raw_payload: Dict[str, Any] = {}
             if is_ai_marker:
+                sender_name_out = self._persona
                 raw_payload["_sender_full_name"] = self._persona
                 raw_payload["_sender_display_name"] = self._persona
                 raw_payload["_sender_username"] = self._persona
+            else:
+                stored_sender_name = str(item.sender_name or "").strip()
+                full_name = self._clean_name_candidate(self._full_name_for(sender_id, stored_sender_name))
+                display_name, username = split_display_and_username(full_name)
+                sender_name_out = username or self._clean_name_candidate(stored_sender_name) or display_name or full_name or sender_id
+                if full_name:
+                    raw_payload["_sender_full_name"] = full_name
+                if display_name:
+                    raw_payload["_sender_display_name"] = display_name
+                if sender_name_out and not looks_like_uuid(sender_name_out):
+                    raw_payload["_sender_username"] = sender_name_out
             chats.append(
                 InboundChat(
                     text=str(item.text or ""),
@@ -1230,6 +1483,26 @@ class MessagePipeline:
                 )
             )
         return chats
+
+    def _filter_overflow_against_summary(self, overflow: List[MemoryItem]) -> List[MemoryItem]:
+        if not overflow:
+            return []
+        summary_end_ts = float(self._memory.summary_meta().get("range_end_ts", 0.0) or 0.0)
+        if summary_end_ts <= 0.0:
+            return list(overflow)
+        filtered = [
+            item
+            for item in overflow
+            if float(item.timestamp or 0.0) <= 0.0 or float(item.timestamp or 0.0) > summary_end_ts
+        ]
+        skipped = len(overflow) - len(filtered)
+        if skipped > 0:
+            logger.info(
+                "Skipping %d overflow messages already covered by summary through %s.",
+                skipped,
+                format_pacific_time(summary_end_ts),
+            )
+        return filtered
 
     def _chat_payload(self, chat: Any) -> Dict[str, Any]:
         raw_value = getattr(chat, "raw", {})
@@ -1282,13 +1555,15 @@ class MessagePipeline:
     ) -> List[Participant]:
         merged: Dict[str, Participant] = {}
         for participant in base_participants:
+            if self._is_ignored_user_id(participant.user_id):
+                continue
             if self._is_self_participant(participant.user_id, participant.name):
                 continue
             canonical_name = self._canonical_name(participant.user_id, participant.name)
             key = self._participant_key(participant.user_id, canonical_name)
             merged[key] = Participant(user_id=participant.user_id, name=canonical_name)
         for message in messages:
-            if self._is_self_message(message):
+            if self._is_ignored_message(message) or self._is_self_message(message):
                 continue
             if not message.sender_id and not message.sender_name:
                 continue
@@ -1342,7 +1617,7 @@ class MessagePipeline:
         now = time.time()
         appended = False
         for message in messages:
-            if self._is_self_message(message):
+            if self._is_ignored_message(message) or self._is_self_message(message):
                 continue
             timestamp = float(message.timestamp or 0.0)
             if timestamp > 0.0 and timestamp <= self._facts_cursor_ts:
@@ -1356,6 +1631,8 @@ class MessagePipeline:
         if appended and self._facts_pending_since_ts <= 0.0:
             self._facts_pending_since_ts = now
         for participant in participants:
+            if self._is_ignored_user_id(participant.user_id):
+                continue
             if self._is_self_participant(participant.user_id, participant.name):
                 continue
             key = self._participant_key(participant.user_id, participant.name)
@@ -1480,6 +1757,7 @@ class MessagePipeline:
             }
         context = self._facts_context(participants, messages)
         facts = self._llm.extract_facts_from_evidence_sync(context, messages, participants)
+        self._log_quality_fallbacks()
         reasoning_trace = self._llm.consume_reasoning_trace("facts")
         fact_strings_extracted = sum(len(fact.facts) for fact in facts)
         stored_stats = {"fact_strings_stored": 0, "people_updated": 0}
@@ -1549,6 +1827,7 @@ class MessagePipeline:
             # Only persist facts that are truly new to avoid repeated writes and DB bloat.
             name_to_store = profile.name if profile and profile.name else (fact.name or user_id)
             self._knowledge_store.upsert_person_facts(user_id, name_to_store, missing_facts)
+            self._mark_mention_index_dirty()
             fact_strings_stored += len(missing_facts)
             people_updated += 1
         return {"fact_strings_stored": fact_strings_stored, "people_updated": people_updated}
@@ -1760,6 +2039,7 @@ class MessagePipeline:
         self._tracer.log_event("llm_prompt_autonomy", prompt_payload)
         self._check_payload_contract(mode="autonomous", payload=prompt_payload)
         bundle = await self._llm.generate_autonomous_bundle(context, activity)
+        self._log_quality_fallbacks()
         bundle.actions = self._filter_autonomous_actions(bundle.actions, participants)
         decision = self._normalize_autonomy_decision(bundle.autonomy_decision, bool(bundle.actions))
         delay_hint = self._sanitize_autonomy_delay_hint(bundle.next_delay_seconds)
@@ -1835,6 +2115,8 @@ class MessagePipeline:
         merged: Dict[str, Participant] = {}
 
         def add_participant(user_id: str, name: str) -> None:
+            if self._is_ignored_user_id(user_id):
+                return
             if self._is_self_participant(user_id, name):
                 return
             if not user_id and not name:
@@ -1912,18 +2194,25 @@ class MessagePipeline:
         )
 
     async def _summarize_episode(self, items: List[Any]) -> str:
-        chats = [
-            InboundChat(
-                text=str(getattr(item, "text", "") or ""),
-                sender_id=str(getattr(item, "sender_id", "") or ""),
-                sender_name=str(getattr(item, "sender_name", "") or ""),
-                timestamp=float(getattr(item, "timestamp", time.time()) or time.time()),
-                raw={},
+        chats: List[InboundChat] = []
+        for item in items:
+            sender_id = str(getattr(item, "sender_id", "") or "")
+            if sender_id != "ai" and is_ignored_user_id(sender_id):
+                continue
+            chats.append(
+                InboundChat(
+                    text=str(getattr(item, "text", "") or ""),
+                    sender_id=sender_id,
+                    sender_name=str(getattr(item, "sender_name", "") or ""),
+                    timestamp=float(getattr(item, "timestamp", time.time()) or time.time()),
+                    raw={},
+                )
             )
-            for item in items
-        ]
+        if not chats:
+            return ""
         try:
             summary = await self._llm.summarize_episode(chats)
+            self._log_quality_fallbacks()
         except Exception:
             summary = ""
         if summary:
@@ -1932,10 +2221,16 @@ class MessagePipeline:
 
     @staticmethod
     def _episode_metadata(items: List[Any], reason: str) -> Dict[str, Any]:
-        timestamps = [float(getattr(item, "timestamp", 0.0) or 0.0) for item in items]
+        filtered_items = [
+            item
+            for item in items
+            if str(getattr(item, "sender_id", "") or "") == "ai"
+            or not is_ignored_user_id(str(getattr(item, "sender_id", "") or ""))
+        ]
+        timestamps = [float(getattr(item, "timestamp", 0.0) or 0.0) for item in filtered_items]
         sender_names: List[str] = []
         seen: Set[str] = set()
-        for item in items:
+        for item in filtered_items:
             name = str(getattr(item, "sender_name", "") or "")
             if not name or name in seen:
                 continue
@@ -1956,18 +2251,41 @@ class MessagePipeline:
     def _latest_timestamp(self) -> float:
         timestamps: List[float] = []
         for item in self._rolling_buffer.items():
+            sender_id = str(getattr(item, "sender_id", "") or "")
+            if sender_id != "ai" and self._is_ignored_user_id(sender_id):
+                continue
             timestamps.append(float(getattr(item, "timestamp", 0.0) or 0.0))
         for item in self._memory.recent():
+            sender_id = str(getattr(item, "sender_id", "") or "")
+            if sender_id != "ai" and self._is_ignored_user_id(sender_id):
+                continue
             timestamps.append(float(getattr(item, "timestamp", 0.0) or 0.0))
         return max(timestamps) if timestamps else 0.0
+
+    @staticmethod
+    def _entity_prompt_payload(entry: Any) -> Any:
+        if not isinstance(entry, dict):
+            return entry
+        cleaned = dict(entry)
+        uuid_value = cleaned.get("uuid") or cleaned.get("target_uuid")
+        cleaned.pop("target_uuid", None)
+        if uuid_value:
+            cleaned["uuid"] = uuid_value
+        return cleaned
 
     def _environment_payload(self, object_limit: int = 25) -> Dict[str, Any]:
         return {
             "location": self._environment.location,
             "avatar_position": self._environment.avatar_position,
             "is_sitting": self._environment.is_sitting,
-            "agents": self._environment.agents[: self._max_environment_participants],
-            "objects": self._environment.objects[:object_limit],
+            "agents": [
+                self._entity_prompt_payload(agent)
+                for agent in self._environment.agents[: self._max_environment_participants]
+            ],
+            "objects": [
+                self._entity_prompt_payload(obj)
+                for obj in self._environment.objects[:object_limit]
+            ],
         }
 
     def _bundle_prompt_payload(
@@ -2008,6 +2326,11 @@ class MessagePipeline:
             incoming_payload = self._incoming_payload_from_batch_entry(latest_batch_entry)
         elif chat is not None:
             incoming_payload = self._chat_payload(chat)
+        stable_people_facts, people_recency = PromptManager.split_people_facts_prompt_sections(
+            context.people_facts,
+            now_ts=now_ts,
+        )
+        stable_agent_state, agent_timing = PromptManager.split_agent_state_prompt_sections(context.agent_state)
 
         payload: Dict[str, Any] = {
             "mode": mode,
@@ -2016,10 +2339,10 @@ class MessagePipeline:
             "user_id": context.user_id,
             "participants": participants_payload,
             "environment": self._environment_payload(),
-            "people_facts": context.people_facts,
+            "people_facts": stable_people_facts,
             "previously": context.summary,
             "summary_meta": summary_meta,
-            "agent_state": context.agent_state,
+            "agent_state": stable_agent_state,
             "persona_instructions": context.persona_instructions,
             "recent_time_range": recent_time_range,
             "recent_messages": [
@@ -2033,18 +2356,14 @@ class MessagePipeline:
             incoming_id = str(incoming_payload.get("sender_id", "") or "")
             payload["incoming_sender_id"] = incoming_id
             payload["incoming_sender_known"] = bool(incoming_id and incoming_id in context.people_facts)
+        if people_recency:
+            payload["people_recency"] = people_recency
+        if agent_timing:
+            payload["agent_timing"] = agent_timing
         if overflow:
             payload["overflow_messages"] = [
                 self._chat_payload(m) for m in overflow
             ]
-        if activity is not None:
-            payload["activity"] = {
-                "seconds_since_activity": activity.get("seconds_since_activity"),
-                "last_message_received_at": format_pacific_time(activity.get("last_inbound_ts")),
-                "last_ai_response_at": format_pacific_time(activity.get("last_response_ts")),
-                "mood": activity.get("mood"),
-                "status": activity.get("status"),
-            }
         return payload
 
     @staticmethod
@@ -2110,6 +2429,14 @@ class MessagePipeline:
         if isinstance(trace, dict) and trace:
             self._tracer.log_event(event_name, trace)
 
+    def _log_quality_fallbacks(self) -> None:
+        events = self._llm.consume_quality_fallback_events()
+        if not isinstance(events, list):
+            return
+        for payload in events:
+            if isinstance(payload, dict) and payload:
+                self._tracer.log_event("llm_quality_fallback", payload)
+
     @staticmethod
     def _bundle_response_payload(bundle: LLMResponseBundle) -> Dict[str, Any]:
         return {
@@ -2174,32 +2501,154 @@ class MessagePipeline:
             deduped.append(lower)
         return deduped
 
+    def _mark_mention_index_dirty(self) -> None:
+        self._mention_index_dirty = True
+
+    def _remember_runtime_mention_name(self, user_id: str, full_name: str) -> None:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return
+        variants = self._mention_name_variants(full_name)
+        if not variants:
+            return
+        runtime_names = self._mention_runtime_names_by_id.setdefault(normalized_user_id, set())
+        runtime_names.update(variants)
+        if self._mention_index_dirty:
+            return
+        indexed_names = self._mention_index_names_by_id.setdefault(normalized_user_id, set())
+        for phrase in variants:
+            phrase_matches = self._mention_index_by_phrase.setdefault(phrase, set())
+            phrase_matches.add(normalized_user_id)
+            indexed_names.add(phrase)
+            self._mention_index_max_phrase_words = max(self._mention_index_max_phrase_words, len(phrase.split()))
+
     @staticmethod
-    def _mention_lookup_tokens(text: str, max_tokens: int = 8) -> List[str]:
-        cleaned = str(text or "").strip()
-        if not cleaned:
+    def _normalize_mention_phrase(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+        cleaned = "".join(ch if ch.isalnum() else " " for ch in normalized)
+        return " ".join(cleaned.split())
+
+    @classmethod
+    def _mention_name_variants(cls, name: str) -> List[str]:
+        raw = str(name or "").strip()
+        if not raw:
             return []
+        display_name, username = split_display_and_username(raw)
+        candidates: List[str] = [raw]
+        if display_name:
+            candidates.append(display_name)
+        if username:
+            candidates.append(username)
+        for source in (display_name, username):
+            normalized_source = cls._normalize_mention_phrase(source)
+            if not normalized_source:
+                continue
+            source_tokens = normalized_source.split()
+            if source_tokens:
+                if len(source_tokens[0]) >= 3:
+                    candidates.append(source_tokens[0])
+                for token in source_tokens[1:]:
+                    if len(token) >= 4:
+                        candidates.append(token)
         deduped: List[str] = []
         seen: set[str] = set()
-        for raw in cleaned.split():
-            token = raw.strip(".,!?;:()[]{}<>\"'`")
-            if token.startswith("@"):
-                token = token[1:]
-            token = token.strip()
-            if len(token) < 4:
+        for candidate in candidates:
+            normalized_candidate = cls._normalize_mention_phrase(candidate)
+            if len(normalized_candidate) < 3:
                 continue
-            if not any(ch.isalpha() for ch in token):
+            if not any(ch.isalpha() for ch in normalized_candidate):
                 continue
-            if MessagePipeline._looks_like_uuid(token):
+            if normalized_candidate in seen:
                 continue
-            lowered = token.lower()
-            if lowered in seen:
-                continue
-            seen.add(lowered)
-            deduped.append(lowered)
-            if len(deduped) >= max_tokens:
-                break
+            seen.add(normalized_candidate)
+            deduped.append(normalized_candidate)
         return deduped
+
+    def _refresh_mention_index_if_needed(self, now_ts: float | None = None) -> None:
+        now_value = float(now_ts or time.time())
+        if (
+            not self._mention_index_dirty
+            and (now_value - float(self._mention_index_last_refresh_ts or 0.0)) < MENTION_INDEX_REFRESH_INTERVAL_SECONDS
+        ):
+            return
+        phrase_index: Dict[str, Set[str]] = {}
+        names_by_id: Dict[str, Set[str]] = {}
+
+        def add_phrase(user_id: str, phrase: str) -> None:
+            if not user_id or not phrase:
+                return
+            if self._is_self_participant(user_id, ""):
+                return
+            users = phrase_index.setdefault(phrase, set())
+            users.add(user_id)
+            names_by_id.setdefault(user_id, set()).add(phrase)
+
+        try:
+            entries = self._knowledge_store.fetch_people_name_index()
+        except Exception:
+            entries = []
+        for entry in entries:
+            user_id = str(getattr(entry, "user_id", "") or "")
+            names = getattr(entry, "names", [])
+            if isinstance(entry, dict):
+                user_id = str(entry.get("user_id", user_id) or "")
+                names = entry.get("names", names)
+            if not user_id:
+                continue
+            if not isinstance(names, list):
+                continue
+            for raw_name in names:
+                for variant in self._mention_name_variants(str(raw_name or "")):
+                    add_phrase(user_id, variant)
+        for user_id, variants in self._mention_runtime_names_by_id.items():
+            for variant in variants:
+                add_phrase(user_id, variant)
+
+        self._mention_index_by_phrase = phrase_index
+        self._mention_index_names_by_id = names_by_id
+        self._mention_index_max_phrase_words = max((len(phrase.split()) for phrase in phrase_index), default=1)
+        self._mention_index_last_refresh_ts = now_value
+        self._mention_index_dirty = False
+
+    def _resolve_text_mentions(self, text: str) -> List[tuple[str, str]]:
+        normalized_text = self._normalize_mention_phrase(text)
+        if not normalized_text:
+            return []
+        self._refresh_mention_index_if_needed()
+        if not self._mention_index_by_phrase:
+            return []
+        tokens = normalized_text.split()
+        if not tokens:
+            return []
+        max_span = min(
+            max(1, int(self._mention_index_max_phrase_words or 1)),
+            MENTION_INDEX_MAX_SCAN_WORDS,
+            len(tokens),
+        )
+        matches: List[tuple[str, str]] = []
+        seen_user_ids: Set[str] = set()
+        idx = 0
+        while idx < len(tokens):
+            matched = False
+            span_limit = min(max_span, len(tokens) - idx)
+            for span_len in range(span_limit, 0, -1):
+                phrase = " ".join(tokens[idx : idx + span_len])
+                user_ids = self._mention_index_by_phrase.get(phrase, set())
+                if len(user_ids) != 1:
+                    continue
+                user_id = next(iter(user_ids))
+                if user_id in seen_user_ids:
+                    matched = True
+                    idx += span_len
+                    break
+                seen_user_ids.add(user_id)
+                matches.append((user_id, phrase))
+                matched = True
+                idx += span_len
+                break
+            if not matched:
+                idx += 1
+        return matches
 
     @staticmethod
     def _looks_like_uuid(value: str) -> bool:

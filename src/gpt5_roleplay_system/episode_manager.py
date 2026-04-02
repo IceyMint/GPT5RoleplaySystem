@@ -154,13 +154,16 @@ class EpisodeManager:
             )
             for item in items
         ]
+        import logging
+        logger = logging.getLogger(__name__)
         try:
             summary = await self._llm.summarize_episode(chats)
-        except Exception:
-            summary = ""
-        if summary:
-            return summary.strip()
-        return self._compressor.compress("", items)
+            if summary:
+                return summary.strip()
+            return ""
+        except Exception as e:
+            logger.error(f"Error during episode summarization: {e}", exc_info=True)
+            return ""
 
     @staticmethod
     def _episode_metadata(items: list[Any], reason: str) -> dict[str, Any]:

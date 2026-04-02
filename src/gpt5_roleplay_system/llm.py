@@ -6,11 +6,9 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
 from dataclasses import dataclass
 from .time_utils import format_pacific_time
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 try:
     from openai import OpenAI
@@ -35,10 +33,6 @@ from .llm_transport import OpenRouterTransport
 logger = logging.getLogger("gpt5_roleplay_llm")
 _UUID_LIKE_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    flags=re.IGNORECASE,
-)
-_MOST_RECENT_CONFIRMED_RE = re.compile(
-    r"Most recent confirmed\s*\(as of\s+([^)]+)\)\s*:",
     flags=re.IGNORECASE,
 )
 
@@ -123,29 +117,6 @@ def _coerce_text_content(value: Any) -> str:
         if candidate:
             return candidate
     return ""
-
-
-def _parse_summary_as_of_timestamp(summary: str) -> float:
-    if not summary:
-        return 0.0
-    matches = list(_MOST_RECENT_CONFIRMED_RE.finditer(str(summary)))
-    if not matches:
-        return 0.0
-    raw_value = str(matches[-1].group(1) or "").strip()
-    if not raw_value:
-        return 0.0
-    try:
-        return float(raw_value)
-    except (TypeError, ValueError):
-        pass
-    try:
-        parsed = datetime.fromisoformat(raw_value)
-    except ValueError:
-        return 0.0
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=ZoneInfo("America/Los_Angeles"))
-    return float(parsed.timestamp())
-
 
 def _message_content_text(message: Any) -> str:
     return _coerce_text_content(getattr(message, "content", None)).strip()
@@ -390,12 +361,19 @@ if BaseModel is not None:
         parameters: Dict[str, Any] = Field(default_factory=dict)
 
     class StructuredFact(BaseModel):
-        user_id: str
+        user_id: str = ""
         name: str = Field(
             default="",
             validation_alias=AliasChoices("name", "display_name", "full_name", "username"),
         )
         facts: List[str] = Field(default_factory=list, validation_alias=AliasChoices("facts", "fact"))
+
+        @field_validator("user_id", mode="before")
+        @classmethod
+        def _normalize_user_id(cls, value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value)
 
         @field_validator("facts", mode="before")
         @classmethod
@@ -545,6 +523,9 @@ class LLMClient:
     def consume_reasoning_trace(self, label: str) -> Dict[str, Any] | None:
         return None
 
+    def consume_quality_fallback_events(self) -> List[Dict[str, Any]]:
+        return []
+
 
 class RuleBasedLLMClient(LLMClient):
     async def is_addressed_to_me(
@@ -586,7 +567,7 @@ class RuleBasedLLMClient(LLMClient):
         return summary
 
     async def summarize_episode(self, messages: List[InboundChat]) -> str:
-        return ""
+        return "Episode summary containing: " + " ".join(m.text for m in messages)
 
     async def generate_bundle(
         self,
@@ -653,7 +634,7 @@ class EchoLLMClient(LLMClient):
         return summary
 
     async def summarize_episode(self, messages: List[InboundChat]) -> str:
-        return ""
+        return "Episode summary containing: " + " ".join(m.text for m in messages)
 
     async def generate_bundle(
         self,
@@ -728,6 +709,9 @@ class OpenRouterLLMClient(LLMClient):
         actual_base_url = self._base_url if self._base_url else None
         self._client = OpenAI(api_key=self._api_key, base_url=actual_base_url, timeout=self._timeout)
         self._reasoning_traces: Dict[str, Dict[str, Any]] = {}
+        self._quality_fallback_events: List[Dict[str, Any]] = []
+        self._quality_fallback_warned_keys: set[str] = set()
+        self._quality_fallback_lock = threading.Lock()
         self._prompt_manager = PromptManager()
         self._structured_parser = StructuredParser()
         self._transport = OpenRouterTransport(
@@ -766,6 +750,68 @@ class OpenRouterLLMClient(LLMClient):
             return None
         payload = self._reasoning_trace_store().pop(label, None)
         return payload if isinstance(payload, dict) else None
+
+    def _quality_fallback_event_store(self) -> List[Dict[str, Any]]:
+        events = getattr(self, "_quality_fallback_events", None)
+        if isinstance(events, list):
+            return events
+        events = []
+        self._quality_fallback_events = events
+        return events
+
+    def _quality_fallback_warned_store(self) -> set[str]:
+        warned = getattr(self, "_quality_fallback_warned_keys", None)
+        if isinstance(warned, set):
+            return warned
+        warned = set()
+        self._quality_fallback_warned_keys = warned
+        return warned
+
+    def _quality_fallback_lock_instance(self) -> threading.Lock:
+        lock = getattr(self, "_quality_fallback_lock", None)
+        if lock is not None and hasattr(lock, "acquire") and hasattr(lock, "release"):
+            return lock
+        lock = threading.Lock()
+        self._quality_fallback_lock = lock
+        return lock
+
+    def _record_quality_fallback(
+        self,
+        *,
+        mode: str,
+        reason: str,
+        fallback_client: str,
+        model: str = "",
+    ) -> None:
+        payload = {
+            "mode": str(mode or ""),
+            "reason": str(reason or ""),
+            "fallback_client": str(fallback_client or ""),
+            "model": str(model or ""),
+            "timestamp": float(time.time()),
+        }
+        warn_key = f"{payload['mode']}|{payload['reason']}|{payload['fallback_client']}|{payload['model']}"
+        should_warn = False
+        with self._quality_fallback_lock_instance():
+            self._quality_fallback_event_store().append(payload)
+            warned = self._quality_fallback_warned_store()
+            if warn_key not in warned:
+                warned.add(warn_key)
+                should_warn = True
+        if should_warn:
+            logger.warning(
+                "LLM quality fallback (%s): %s; using %s (model=%s)",
+                payload["mode"] or "unknown",
+                payload["reason"] or "unspecified",
+                payload["fallback_client"] or "unknown",
+                payload["model"] or "default",
+            )
+
+    def consume_quality_fallback_events(self) -> List[Dict[str, Any]]:
+        with self._quality_fallback_lock_instance():
+            events = list(self._quality_fallback_event_store())
+            self._quality_fallback_events = []
+        return events
 
     def _record_reasoning_trace(
         self,
@@ -890,6 +936,12 @@ class OpenRouterLLMClient(LLMClient):
         context: ConversationContext | None = None,
     ) -> bool:
         if not self._api_key:
+            self._record_quality_fallback(
+                mode="address_check",
+                reason="missing_api_key",
+                fallback_client=type(self._fallback).__name__,
+                model=self._address_model,
+            )
             return await self._fallback.is_addressed_to_me(chat, persona, environment, participants, context)
         system_prompt = self._prompt_manager_instance().address_check_system_prompt()
         user_prompt = self._format_address_check(chat, persona, environment, participants, context)
@@ -912,7 +964,15 @@ class OpenRouterLLMClient(LLMClient):
 
     async def summarize_overflow(self, summary: str, messages: List[InboundChat]) -> str:
         if not self._api_key:
+            self._record_quality_fallback(
+                mode="overflow_summary",
+                reason="missing_api_key",
+                fallback_client=type(self._fallback).__name__,
+                model=self._summary_model,
+            )
             return await self._fallback.summarize_overflow(summary, messages)
+        if not messages:
+            return summary
 
         ordered_messages = sorted(
             enumerate(messages),
@@ -922,21 +982,6 @@ class OpenRouterLLMClient(LLMClient):
                 int(item[0]),
             ),
         )
-
-        summary_as_of_ts = _parse_summary_as_of_timestamp(summary)
-        if summary_as_of_ts > 0.0:
-            filtered_messages = [
-                (idx, msg)
-                for idx, msg in ordered_messages
-                if float(msg.timestamp or 0.0) <= 0.0 or float(msg.timestamp or 0.0) > summary_as_of_ts
-            ]
-            if not filtered_messages:
-                logger.info(
-                    "Skipping summary update: all candidate messages are at/before existing summary as-of (%s).",
-                    format_pacific_time(summary_as_of_ts),
-                )
-                return summary
-            ordered_messages = filtered_messages
 
         ordered_chats = [msg for _, msg in ordered_messages]
         prompt = self._prompt_manager_instance().continuity_summary_system_prompt()
@@ -953,6 +998,12 @@ class OpenRouterLLMClient(LLMClient):
 
     async def summarize_episode(self, messages: List[InboundChat]) -> str:
         if not self._api_key:
+            self._record_quality_fallback(
+                mode="episode_summary",
+                reason="missing_api_key",
+                fallback_client=type(self._fallback).__name__,
+                model=self._summary_model,
+            )
             return await self._fallback.summarize_episode(messages)
 
         ordered_messages = sorted(
@@ -984,9 +1035,21 @@ class OpenRouterLLMClient(LLMClient):
         incoming_batch: List[Dict[str, Any]] | None = None,
     ) -> LLMResponseBundle:
         if not self._api_key:
+            self._record_quality_fallback(
+                mode="bundle",
+                reason="missing_api_key",
+                fallback_client=type(self._fallback).__name__,
+                model=self._bundle_model,
+            )
             return await self._fallback.generate_bundle(chat, context, overflow, incoming_batch)
         parsed = await asyncio.to_thread(self._request_bundle, chat, context, overflow, incoming_batch)
         if parsed is None:
+            self._record_quality_fallback(
+                mode="bundle",
+                reason="structured_response_unavailable",
+                fallback_client=type(self._fallback).__name__,
+                model=self._bundle_model,
+            )
             return await self._fallback.generate_bundle(chat, context, overflow, incoming_batch)
         bundle = _bundle_from_structured(parsed, mode="chat")
         if not self._facts_in_bundle:
@@ -995,6 +1058,13 @@ class OpenRouterLLMClient(LLMClient):
         facts_only = await asyncio.to_thread(self._request_facts_from_chat, chat, context)
         if facts_only is not None:
             bundle.facts = _facts_from_structured(facts_only)
+        else:
+            self._record_quality_fallback(
+                mode="facts_postpass",
+                reason="structured_response_unavailable",
+                fallback_client="bundle_facts_retained",
+                model=self._facts_model,
+            )
         return bundle
 
     async def generate_state_update(
@@ -1005,9 +1075,21 @@ class OpenRouterLLMClient(LLMClient):
         incoming_batch: List[Dict[str, Any]] | None = None,
     ) -> LLMStateUpdate:
         if not self._api_key:
+            self._record_quality_fallback(
+                mode="state_update",
+                reason="missing_api_key",
+                fallback_client=type(self._fallback).__name__,
+                model=self._bundle_model,
+            )
             return await self._fallback.generate_state_update(chat, context, overflow, incoming_batch)
         parsed = await asyncio.to_thread(self._request_state_update, chat, context, overflow, incoming_batch)
         if parsed is None:
+            self._record_quality_fallback(
+                mode="state_update",
+                reason="structured_response_unavailable",
+                fallback_client=type(self._fallback).__name__,
+                model=self._bundle_model,
+            )
             return await self._fallback.generate_state_update(chat, context, overflow, incoming_batch)
         update = _state_update_from_structured(parsed)
         if not self._facts_in_bundle:
@@ -1020,9 +1102,21 @@ class OpenRouterLLMClient(LLMClient):
         activity: Dict[str, Any],
     ) -> LLMResponseBundle:
         if not self._api_key:
+            self._record_quality_fallback(
+                mode="autonomy",
+                reason="missing_api_key",
+                fallback_client=type(self._fallback).__name__,
+                model=self._bundle_model,
+            )
             return await self._fallback.generate_autonomous_bundle(context, activity)
         parsed = await asyncio.to_thread(self._request_autonomous_bundle, context, activity)
         if parsed is None:
+            self._record_quality_fallback(
+                mode="autonomy",
+                reason="structured_response_unavailable",
+                fallback_client=type(self._fallback).__name__,
+                model=self._bundle_model,
+            )
             return await self._fallback.generate_autonomous_bundle(context, activity)
         return _bundle_from_structured(parsed, mode="autonomous")
 
@@ -1161,7 +1255,6 @@ class OpenRouterLLMClient(LLMClient):
             if self._is_no_endpoint_not_found(exc):
                 parse_cache.add(parse_key)
             raw_text = None
-            # Check for truncation or content filter in API error
             completion = getattr(exc, "completion", None)
             if completion is not None:
                 self._record_cache_usage("structured.parse_error", completion)
@@ -1171,8 +1264,6 @@ class OpenRouterLLMClient(LLMClient):
                 raw_text = _message_content_text(completion.choices[0].message)
 
             if not raw_text:
-                # If parse() failed due to ValidationError, it won't have the completion object.
-                # We fetch the raw text by performing a standard create() call without parsing.
                 raw_text = self._request_structured_raw_create(
                     kwargs,
                     request_type="structured.debug_create",
@@ -1334,6 +1425,13 @@ class OpenRouterLLMClient(LLMClient):
             related_experiences=[],
             people_facts=context.people_facts,
         )
+        if parsed is None:
+            self._record_quality_fallback(
+                mode="facts",
+                reason="structured_response_unavailable",
+                fallback_client="empty_list",
+                model=self._facts_model,
+            )
         return _facts_from_structured(parsed) if parsed is not None else []
 
     def _request_text(
@@ -1433,8 +1531,20 @@ class OpenRouterLLMClient(LLMClient):
         )
 
     @classmethod
+    def _entity_prompt_payload(cls, entry: Any) -> Any:
+        canonical = cls._canonicalize_for_prompt(entry)
+        if not isinstance(canonical, dict):
+            return canonical
+        entity_id = canonical.get("uuid") or canonical.get("target_uuid")
+        if not entity_id:
+            return canonical
+        cleaned = {key: value for key, value in canonical.items() if key != "target_uuid"}
+        cleaned["uuid"] = entity_id
+        return cls._canonicalize_for_prompt(cleaned)
+
+    @classmethod
     def _stable_entity_list(cls, entries: List[Any]) -> List[Any]:
-        canonical = [cls._canonicalize_for_prompt(entry) for entry in entries]
+        canonical = [cls._entity_prompt_payload(entry) for entry in entries]
 
         def entity_sort_key(item: Any) -> str:
             if isinstance(item, dict):

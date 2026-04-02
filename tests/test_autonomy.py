@@ -6,6 +6,7 @@ from gpt5_roleplay_system.config import AutonomyConfig, ServerConfig
 from gpt5_roleplay_system.models import Action, CommandType
 from gpt5_roleplay_system.neo4j_store import InMemoryKnowledgeStore
 from gpt5_roleplay_system.observability import NoOpTracer
+from gpt5_roleplay_system.protocol import decode_message
 from gpt5_roleplay_system.server import GPT5RoleplayServer, _compute_autonomy_delay, _status_loop
 from gpt5_roleplay_system.session import ClientSession
 
@@ -129,6 +130,73 @@ def test_set_llm_chat_enabled_true_enables_output():
     )
     asyncio.run(session.handle_message("set_llm_chat_enabled", {"enabled": True}))
     assert controller.llm_chat_enabled() is True
+
+
+def test_send_actions_suppresses_all_commands_for_default_persona():
+    class DefaultPersonaController(StubController):
+        def persona(self) -> str:
+            return "DefaultPersona"
+
+    controller = DefaultPersonaController()
+    writer = DummyWriter()
+    session = ClientSession(
+        session_id="s-default-persona-chat-filter",
+        controller=controller,
+        writer=writer,
+        batch_window_seconds=0.0,
+        batch_max_size=1,
+    )
+    asyncio.run(
+        session.send_actions(
+            [
+                Action(command_type=CommandType.CHAT, content="hello", parameters={"content": "hello"}),
+                Action(command_type=CommandType.EMOTE, content="*waves*", parameters={"content": "*waves*"}),
+            ]
+        )
+    )
+
+    assert not hasattr(writer, "last")
+
+
+def test_send_actions_drops_chat_for_default_persona():
+    class DefaultPersonaController(StubController):
+        def persona(self) -> str:
+            return "DefaultPersona"
+
+    controller = DefaultPersonaController()
+    writer = DummyWriter()
+    session = ClientSession(
+        session_id="s-default-persona-chat-drop",
+        controller=controller,
+        writer=writer,
+        batch_window_seconds=0.0,
+        batch_max_size=1,
+    )
+
+    asyncio.run(
+        session.send_actions([Action(command_type=CommandType.CHAT, content="hello", parameters={"content": "hello"})])
+    )
+
+    assert not hasattr(writer, "last")
+
+
+def test_send_actions_allows_commands_for_non_default_persona():
+    controller = StubController()
+    writer = DummyWriter()
+    session = ClientSession(
+        session_id="s-non-default-persona-send",
+        controller=controller,
+        writer=writer,
+        batch_window_seconds=0.0,
+        batch_max_size=1,
+    )
+
+    asyncio.run(session.send_actions([Action(command_type=CommandType.EMOTE, content="*waves*")]))
+
+    payload = decode_message(writer.last.decode("utf-8"))
+    commands = payload.data.get("commands", [])
+    assert len(commands) == 1
+    assert commands[0].get("type") == "EMOTE"
 
 
 def test_connection_starts_with_llm_chat_disabled():

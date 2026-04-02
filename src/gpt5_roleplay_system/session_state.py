@@ -31,13 +31,16 @@ class SessionStateStore:
         base.mkdir(parents=True, exist_ok=True)
         persona_slug = _slug(persona or "persona")
         user_slug = _slug(user_id or "user")
-        self._path = base / f"session_state_{persona_slug}_{user_slug}.json"
+        self._path = base / f"session_state_{persona_slug}.json"
+        self._legacy_path = base / f"session_state_{persona_slug}_{user_slug}.json"
+        self._legacy_glob = f"session_state_{persona_slug}_*.json"
 
     def load(self) -> Dict[str, Any]:
-        if not self._path.exists():
+        load_path = self._resolve_load_path()
+        if load_path is None:
             return {}
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
+            data = json.loads(load_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
         if not isinstance(data, dict):
@@ -57,6 +60,21 @@ class SessionStateStore:
             memory["recent"] = self._dump_items(memory.get("recent", []))
             payload["memory"] = memory
         self._atomic_write(payload)
+
+    def _resolve_load_path(self) -> Path | None:
+        if self._path.exists():
+            return self._path
+        if self._legacy_path.exists():
+            return self._legacy_path
+        legacy_candidates = [
+            path
+            for path in self._path.parent.glob(self._legacy_glob)
+            if path.is_file()
+        ]
+        if not legacy_candidates:
+            return None
+        legacy_candidates.sort(key=lambda path: (path.stat().st_mtime, path.name))
+        return legacy_candidates[-1]
 
     def _atomic_write(self, payload: Dict[str, Any]) -> None:
         tmp_path = ""

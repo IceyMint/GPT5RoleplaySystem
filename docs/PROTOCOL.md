@@ -51,6 +51,7 @@ Notes:
   - `uuid` or `target_uuid`
 - The viewer should exclude the AI's own avatar from `agents`.
 - `is_sitting` is an optional boolean that reflects the AI avatar's current sit state.
+- `logged_in_agent`, `persona`, or `ai_name` may be included as optional persona hints. When the session is still on `DefaultPersona`, the server uses these to promote the correct persona before the first chat message arrives.
 
 ### `set_user_id`
 

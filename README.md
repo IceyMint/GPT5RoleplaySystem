@@ -62,7 +62,7 @@ Message types used by the server:
 
 - Each TCP connection maps to an isolated session with its own controller and memory.
 - `set_user_id` applies only to the connection that sent it.
-- Persona stays session-local and can be updated from inbound payload hints (`logged_in_agent`, `persona`, `ai_name`).
+- Persona stays session-local and can be updated from inbound payload hints (`logged_in_agent`, `persona`, `ai_name`). `environment_update` can promote `DefaultPersona` before the first chat message arrives.
 - New sessions start with LLM chat output disabled; the viewer should send `set_llm_chat_enabled` with `enabled: true` after connect.
 - `process_chat` can include optional `participants` (list of `{user_id,name}`) to avoid LLM-based name detection.
 - Environment updates are stored per session; only the session that sent them sees them.
