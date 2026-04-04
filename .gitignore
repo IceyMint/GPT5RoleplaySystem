@@ -8,4 +8,3 @@ src/gpt5_roleplay_system/__pycache__/*
 src/wandb/*
 *.pyc
 src/.episode_state/*
-src/.episode_state/*
