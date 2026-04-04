@@ -279,6 +279,7 @@ class FactManager:
         self._facts_pending_messages = []
         self._facts_pending_keys = set()
         self._facts_pending_since_ts = 0.0
+        self._facts_pending_participants = {}
         self._facts_last_sweep_ts = now
         self._facts_task = asyncio.create_task(
             self._facts_worker(
