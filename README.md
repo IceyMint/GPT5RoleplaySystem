@@ -71,7 +71,6 @@ Message types used by the server:
 ## Config
 
 - If `--config` is not provided, the server checks `GPT5_ROLEPLAY_CONFIG`, then `./config.yaml`.
-- For compatibility, it will also look for a sibling `qwenRoleplayAISystem/config.yaml` when no local file exists.
 - Use `config.yaml` as the schema reference and keep real API keys out of git.
 - Backpressure settings: `GPT5_ROLEPLAY_QUEUE_MAX` and `GPT5_ROLEPLAY_QUEUE_DROP` (`drop_oldest` or `drop_newest`).
 - Chat batching settings: `GPT5_ROLEPLAY_BATCH_WINDOW_MS` and `GPT5_ROLEPLAY_BATCH_MAX`.
