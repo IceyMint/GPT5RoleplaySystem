@@ -415,9 +415,6 @@ class ConfigLoader:
         local = Path.cwd() / "config.yaml"
         if local.exists():
             return local
-        parent = Path.cwd().parent / "qwenRoleplayAISystem" / "config.yaml"
-        if parent.exists():
-            return parent
         return None
 
     @staticmethod

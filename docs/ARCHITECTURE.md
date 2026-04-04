@@ -9,6 +9,7 @@ Key entry points:
 - Session routing + batching: `src/gpt5_roleplay_system/session.py`
 - Orchestration + persistence: `src/gpt5_roleplay_system/controller.py`
 - Core pipeline: `src/gpt5_roleplay_system/pipeline.py`
+- Background tasks: `src/gpt5_roleplay_system/background_tasks.py`
 
 ## High-Level Flow (Per Connection)
 
@@ -41,20 +42,18 @@ Key entry points:
 
 4) Pipeline stages
 
-At a high level, `MessagePipeline.process_chat_batch(...)` does:
+At a high level, `MessagePipeline.process_chat_batch(...)` delegates to specialized components:
 
-- Build normalized `InboundChat` objects.
-- Filter self messages (prevents self-reply loops).
-- Update rolling buffer + short-term memory.
-- Build context (participants, environment, facts, summary, experiences).
+- `ContextBuilder`: builds normalized `InboundChat` objects, context (participants, environment, summary, experiences), and filters self messages.
+- `RollingBuffer` / `ConversationMemory`: manages short-term context.
 - Addressed-to-me classification.
 - Generate structured bundle (text + actions + facts + hints + summary update).
-- Apply summary compression and schedule fact storage.
-- Schedule episodic experience detection.
+- `FactManager`: extracts and stores conversational facts to the memory store.
+- `EpisodeManager`: finalizes rolling buffer slices into semantic long-term experiences.
 
 ## Autonomy and Status Loops
 
-When enabled (`autonomy.enabled: true`), the server starts:
+When enabled (`autonomy.enabled: true`), the server starts autonomy routines via `AutonomyManager` state:
 
 - Autonomy loop: `_autonomy_loop(...)`
   - schedules `autonomous_tick` messages onto the session queue

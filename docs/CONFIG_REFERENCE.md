@@ -7,7 +7,6 @@ Resolution order:
 1) `--config /path/to/config.yaml`
 2) `GPT5_ROLEPLAY_CONFIG`
 3) `./config.yaml`
-4) `../qwenRoleplayAISystem/config.yaml` (compat fallback)
 
 ## Top-Level Keys
 

@@ -156,9 +156,6 @@ def _resolve_default_config_path() -> Optional[Path]:
     local = Path.cwd() / "config.yaml"
     if local.exists():
         return local
-    parent = Path.cwd().parent / "qwenRoleplayAISystem" / "config.yaml"
-    if parent.exists():
-        return parent
     return None
 
 
