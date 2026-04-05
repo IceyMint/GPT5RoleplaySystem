@@ -162,16 +162,27 @@ class FactManager:
             name_key = self._normalize_name_for_match(participant.name)
             if name_key:
                 alias_to_id[name_key] = participant.user_id
-        fact_strings_stored = 0
-        people_updated = 0
+        fact_to_user_id = []
+        user_ids_to_fetch = set()
         for fact in facts:
             user_id = fact.user_id
             if not user_id and fact.name:
                 key = self._normalize_name_for_match(fact.name)
                 user_id = alias_to_id.get(key, "") if key else ""
+            fact_to_user_id.append(user_id)
+            if user_id:
+                user_ids_to_fetch.add(user_id)
+
+        profiles = self._knowledge_store.fetch_people(list(user_ids_to_fetch))
+
+        fact_strings_stored = 0
+        people_updated = 0
+        for i, fact in enumerate(facts):
+            user_id = fact_to_user_id[i]
             if not user_id:
                 continue
-            profile = self._knowledge_store.fetch_people([user_id]).get(user_id)
+
+            profile = profiles.get(user_id)
             existing_list = list(profile.facts) if profile else []
             existing_keys = {
                 self._normalize_fact_key(item)
@@ -196,6 +207,15 @@ class FactManager:
                 continue
             name_to_store = profile.name if profile and profile.name else (fact.name or user_id)
             self._knowledge_store.upsert_person_facts(user_id, name_to_store, missing_facts)
+
+            if profile is None:
+                from .neo4j_store import PersonProfile
+                profile = PersonProfile(user_id=user_id, name=name_to_store, facts=[])
+                profiles[user_id] = profile
+            else:
+                profile.name = name_to_store
+            profile.facts.extend(missing_facts)
+
             fact_strings_stored += len(missing_facts)
             people_updated += 1
         return {"fact_strings_stored": fact_strings_stored, "people_updated": people_updated}
