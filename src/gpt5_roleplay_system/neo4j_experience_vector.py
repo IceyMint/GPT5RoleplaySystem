@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from .cypher_utils import quote_cypher_identifier
 from .experience_vector import EmbeddingClient
 from .memory import ExperienceRecord
 
@@ -53,12 +54,18 @@ class Neo4jExperienceVectorIndex:
         return self._driver.session(database=self._database)
 
     def _ensure_vector_index(self) -> None:
+        similarity = str(self._config.similarity or "cosine").lower().strip()
+        if similarity not in ("cosine", "euclidean", "dot_product"):
+            similarity = "cosine"
+
+        index_name = quote_cypher_identifier(self._config.index_name)
+
         statement = (
-            f"CREATE VECTOR INDEX {self._config.index_name} IF NOT EXISTS "
+            f"CREATE VECTOR INDEX {index_name} IF NOT EXISTS "
             "FOR (e:Experience) ON (e.embedding) "
             "OPTIONS {indexConfig: {"
             f"`vector.dimensions`: {int(self._config.dimensions)}, "
-            f"`vector.similarity_function`: '{self._config.similarity}'"
+            f"`vector.similarity_function`: '{similarity}'"
             "}}"
         )
         with self._session() as session:
