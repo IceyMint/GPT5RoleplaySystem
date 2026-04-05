@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from gpt5_roleplay_system.experience_vector import EmbeddingClient
 from gpt5_roleplay_system.neo4j_experience_vector import Neo4jExperienceVectorIndex, Neo4jVectorConfig
-from gpt5_roleplay_system.neo4j_store import Neo4jKnowledgeStore, _quote_cypher_identifier
+from gpt5_roleplay_system.neo4j_store import Neo4jKnowledgeStore
+from gpt5_roleplay_system.cypher_utils import quote_cypher_identifier
 
 
 class _FakeEmbedder(EmbeddingClient):
@@ -65,11 +66,11 @@ class _RecordingSession:
 
 
 def test_quote_cypher_identifier_supports_hyphenated_database_names():
-    assert _quote_cypher_identifier("gpt5-roleplay") == "`gpt5-roleplay`"
+    assert quote_cypher_identifier("gpt5-roleplay") == "`gpt5-roleplay`"
 
 
 def test_quote_cypher_identifier_escapes_backticks():
-    assert _quote_cypher_identifier("db`name") == "`db``name`"
+    assert quote_cypher_identifier("db`name") == "`db``name`"
 
 
 def test_neo4j_vector_index_enabled_with_external_embedder_without_genai_token():
