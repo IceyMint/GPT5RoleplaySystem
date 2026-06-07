@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import re
 import time
 import unicodedata
 from typing import Any, Dict, List
@@ -164,6 +165,8 @@ class Neo4jKnowledgeStore(KnowledgeStore):
             raise RuntimeError("neo4j package is not installed") from exc
         self._driver = GraphDatabase.driver(uri, auth=(user, password))
         self._database = database or "neo4j"
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9.-]*$", self._database):
+            raise ValueError(f"Invalid database name: {self._database}")
         self._ensure_database_and_constraints()
 
     def _system_session(self):

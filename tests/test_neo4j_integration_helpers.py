@@ -73,6 +73,15 @@ def test_quote_cypher_identifier_escapes_backticks():
     assert quote_cypher_identifier("db`name") == "`db``name`"
 
 
+import pytest
+
+def test_neo4j_store_rejects_invalid_database_name(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "neo4j", type("mock_neo4j", (), {"GraphDatabase": type("MockGraphDatabase", (), {"driver": lambda *a, **kw: _FakeDriver()})}))
+    with pytest.raises(ValueError, match="Invalid database name"):
+        Neo4jKnowledgeStore("bolt://localhost:7687", "user", "pass", "invalid`db")
+
+
 def test_neo4j_vector_index_enabled_with_external_embedder_without_genai_token():
     index = Neo4jExperienceVectorIndex(
         driver=_FakeDriver(),
