@@ -165,6 +165,8 @@ class MessagePipeline:
         self._autonomy_decision = "wait"
         self._mood_source = "init"
         self._status_source = "init"
+        self._latency_history: List[float] = []
+        self._last_latency_summary_ts = now
         logger.info(
             "Pipeline LLM client: %s (persona=%s, user_id=%s)",
             type(self._llm).__name__,
@@ -543,10 +545,38 @@ class MessagePipeline:
     def user_id(self) -> str:
         return self._user_id
 
+    def _record_latency(self, latency_ms: float, batch_size: int, actions: int = 0, chat_output_enabled: bool = True) -> None:
+        self._tracer.log_event("response", {
+            "actions": actions,
+            "batch": batch_size,
+            "chat_output_enabled": chat_output_enabled,
+            "latency_ms": latency_ms,
+        })
+        self._latency_history.append(latency_ms)
+        now = time.time()
+        if now - self._last_latency_summary_ts >= 300.0 or len(self._latency_history) >= 100:
+            if self._latency_history:
+                history = sorted(self._latency_history)
+                count = len(history)
+                avg_ms = sum(history) / count
+                min_ms = history[0]
+                max_ms = history[-1]
+                p95_ms = history[int(count * 0.95)] if count > 1 else max_ms
+                self._tracer.log_event("perf_summary", {
+                    "count": count,
+                    "avg_ms": avg_ms,
+                    "min_ms": min_ms,
+                    "max_ms": max_ms,
+                    "p95_ms": p95_ms,
+                })
+                self._latency_history.clear()
+            self._last_latency_summary_ts = now
+
     async def process_chat(self, data: Dict[str, Any]) -> List[Any]:
         return await self.process_chat_batch([data])
 
     async def process_chat_batch(self, batch: List[Dict[str, Any]]) -> List[Any]:
+        start_ts = time.time()
         chats = [self._context_builder_component.build_chat(item) for item in batch]
         non_self_chats: List[InboundChat] = []
         for chat in chats:
@@ -558,6 +588,7 @@ class MessagePipeline:
                 non_self_chats.append(chat)
 
         if not non_self_chats:
+            self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=0, chat_output_enabled=self._llm_chat_enabled)
             return []
 
         self._last_inbound_ts = time.time()
@@ -574,7 +605,7 @@ class MessagePipeline:
             # Ensure deferred compression doesn't accumulate unbounded while silent.
             self._memory.compress_overflow()
             self._enforce_summary_before_recent(reason="chat_disabled")
-            self._tracer.log_event("response", {"actions": 0, "batch": len(chats), "chat_output_enabled": False})
+            self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=0, chat_output_enabled=False)
             self._schedule_episode_check()
             return []
 
@@ -643,6 +674,7 @@ class MessagePipeline:
                 else:
                     self._memory.compress_overflow(overflow)
             self._enforce_summary_before_recent(reason="not_addressed")
+            self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=0, chat_output_enabled=True)
             self._schedule_episode_check()
             return []
 
@@ -681,7 +713,7 @@ class MessagePipeline:
         self._update_mood_and_status(bundle, source="chat")
         if bundle.actions or bundle.text:
             self._last_response_ts = time.time()
-        self._tracer.log_event("response", {"actions": len(bundle.actions), "batch": len(chats)})
+        self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=len(bundle.actions), chat_output_enabled=True)
         self._schedule_episode_check()
         return bundle.actions
 
