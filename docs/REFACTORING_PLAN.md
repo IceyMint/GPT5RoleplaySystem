@@ -1,5 +1,18 @@
 # GPT5 Roleplay System Refactoring Plan
 
+> ⚠️ **OBSOLETE — DO NOT FOLLOW (noted 2026-08-18).**
+> This refactor was only half-applied and then abandoned. `context_builder.py`,
+> `fact_manager.py`, and `episode_manager.py` were created but are **not used**: they
+> delegate everything back to `pipeline.py` via `owner=self`. Runtime tracing of a full
+> turn shows `episode_manager` executing **0** functions and the other two executing
+> only 2-line forwarders.
+>
+> Their copies have since **drifted and are worse** than the live code in `pipeline.py`
+> (missing ignored-user filtering, near-duplicate fact filtering, etc.). Treating this
+> document as current will send you to edit code that never runs.
+>
+> See `docs/STATE_OF_PLAY.md` §3 for what is actually live.
+
 ## Scope
 This plan refactors architecture only; runtime behavior and public entrypoints stay stable while code is decomposed.
 

@@ -2,6 +2,10 @@
 
 Use this as the entry point when you need to re-orient quickly.
 
+> **Returning after time away? Read `docs/STATE_OF_PLAY.md` first.**
+> It records what is verified true about the running system, what is fixed, what is
+> still broken, and which docs are stale and will mislead you.
+
 ## Quick Start
 
 - Run server: `python -m gpt5_roleplay_system.server --host 0.0.0.0 --port 9999 --config /path/to/config.yaml`
