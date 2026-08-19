@@ -49,6 +49,7 @@ class SessionStateStore:
         memory = data.get("memory", {})
         if isinstance(memory, dict):
             memory["recent"] = self._load_items(memory.get("recent", []))
+            memory["overflow"] = self._load_items(memory.get("overflow", []))
             data["memory"] = memory
         return data
 
@@ -57,7 +58,11 @@ class SessionStateStore:
         payload["rolling_buffer"] = self._dump_items(payload.get("rolling_buffer", []))
         memory = payload.get("memory", {})
         if isinstance(memory, dict):
+            # Copy before mutating: `state` belongs to the live pipeline and this runs
+            # on a background thread.
+            memory = dict(memory)
             memory["recent"] = self._dump_items(memory.get("recent", []))
+            memory["overflow"] = self._dump_items(memory.get("overflow", []))
             payload["memory"] = memory
         self._atomic_write(payload)
 

@@ -253,7 +253,10 @@ class SummaryCaptureNeverAddressedLLM(LLMClient):
 
     async def summarize_overflow(self, summary, messages) -> str:
         self.summarize_calls.append([str(msg.text) for msg in messages])
-        return summary or "summary"
+        # Produce a genuinely new summary each time. Echoing `summary` back unchanged is
+        # the "summarization stalled" signal, which the pipeline now treats as a failure
+        # and requeues rather than advancing the summary watermark.
+        return "summary: " + ", ".join(str(msg.text) for msg in messages)
 
 
 class SummarySenderCaptureLLM(LLMClient):

@@ -643,6 +643,33 @@ def test_bundle_model_override_only_applies_to_bundle_requests():
     assert client.calls == ["bundle-only-model", "default-model", "default-model"]
 
 
+def test_summarize_overflow_returns_empty_not_previous_summary_when_model_yields_nothing():
+    """A blank model response must not echo the old summary back.
+
+    Callers treat any truthy result as a real summary and advance the summary
+    timestamp watermark, which would mark the drained overflow as covered by text
+    that never described it -- silently destroying those messages.
+    """
+
+    class EmptyResponseClient(OpenRouterLLMClient):
+        def __init__(self) -> None:
+            self._api_key = "test-key"
+            self._summary_model = "summary-model"
+            self._max_tokens = 111
+            self._temperature = 0.5
+
+        def _request_text_with_model(self, model, system_prompt, user_prompt, max_tokens, temperature):
+            return ""
+
+    client = EmptyResponseClient()
+    messages = [InboundChat(text="hello", sender_id="user-1", sender_name="User", timestamp=1.0, raw={})]
+
+    result = asyncio.run(client.summarize_overflow("PRIOR SUMMARY", messages))
+
+    assert result == ""
+    assert result != "PRIOR SUMMARY"
+
+
 def test_summarize_uses_summary_model():
     class CaptureClient(OpenRouterLLMClient):
         def __init__(self) -> None:

@@ -571,7 +571,13 @@ class MessagePipeline:
                 self._rolling_buffer.add_user_message(chat)
                 self._memory.add_message(chat)
             self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, [], participants)
-            # Ensure deferred compression doesn't accumulate unbounded while silent.
+            # NOTE: with the production compressor (SimpleMemoryCompressor) this call is
+            # a no-op -- it was made a deliberate no-op in a16995d to stop naive summaries
+            # poisoning the context. It is kept because compress_overflow() requeues items
+            # when the compressor produces nothing, so overflow keeps growing while
+            # replies are disabled rather than silently discarding un-summarized history.
+            # Do NOT "fix" this by capping overflow: overflow is the only copy of that
+            # history. See docs/STATE_OF_PLAY.md section 2.
             self._memory.compress_overflow()
             self._enforce_summary_before_recent(reason="chat_disabled")
             self._tracer.log_event("response", {"actions": 0, "batch": len(chats), "chat_output_enabled": False})
@@ -633,15 +639,7 @@ class MessagePipeline:
                 break
         if not addressed:
             if overflow:
-                if self._summary_strategy == "llm":
-                    summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
-                    self._log_quality_fallbacks()
-                    if summary_text:
-                        self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
-                    else:
-                        self._memory.requeue_overflow(overflow)
-                else:
-                    self._memory.compress_overflow(overflow)
+                await self._apply_overflow_summary(overflow, overflow_chats, overflow_timestamps)
             self._enforce_summary_before_recent(reason="not_addressed")
             self._schedule_episode_check()
             return []
@@ -665,15 +663,7 @@ class MessagePipeline:
             self._rolling_buffer.add_ai_message(bundle.text, self._persona)
             self._memory.add_ai_message(bundle.text, self._persona)
         if overflow:
-            if self._summary_strategy == "llm":
-                summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
-                self._log_quality_fallbacks()
-                if summary_text:
-                    self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
-                else:
-                    self._memory.requeue_overflow(overflow)
-            else:
-                self._memory.compress_overflow(overflow)
+            await self._apply_overflow_summary(overflow, overflow_chats, overflow_timestamps)
         self._enforce_summary_before_recent(reason="after_response")
         if self._facts_enabled and self._facts_mode == "per_message":
             self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
@@ -684,6 +674,55 @@ class MessagePipeline:
         self._tracer.log_event("response", {"actions": len(bundle.actions), "batch": len(chats)})
         self._schedule_episode_check()
         return bundle.actions
+
+    async def _apply_overflow_summary(
+        self,
+        overflow: List[MemoryItem],
+        overflow_chats: List[InboundChat],
+        overflow_timestamps: List[float],
+    ) -> None:
+        """Summarize drained overflow, requeueing it unless the summary really advanced.
+
+        Applying a summary advances the timestamp watermark, and anything at or below
+        that watermark is later discarded by _filter_overflow_against_summary. So we
+        must only advance when the summary text genuinely changed -- otherwise a failed
+        or no-op summarization silently destroys conversation history.
+        """
+        if not overflow:
+            return
+        if self._summary_strategy != "llm":
+            # compress_overflow() already requeues when the compressor doesn't advance.
+            self._memory.compress_overflow(overflow)
+            return
+
+        previous_summary = (self._memory.summary() or "").strip()
+        try:
+            summary_text = await self._llm.summarize_overflow(previous_summary, overflow_chats)
+        except Exception:
+            logger.exception("Overflow summarization failed; requeueing %d message(s).", len(overflow))
+            self._memory.requeue_overflow(overflow)
+            return
+        self._log_quality_fallbacks()
+
+        cleaned = (summary_text or "").strip()
+        if not cleaned or cleaned == previous_summary:
+            # No new coverage was produced: keep the messages queued for a later attempt
+            # rather than marking them summarized.
+            logger.warning(
+                "Overflow summary did not advance (empty or unchanged); requeueing %d message(s).",
+                len(overflow),
+            )
+            self._tracer.log_event(
+                "overflow_summary_stalled",
+                {
+                    "messages": len(overflow),
+                    "reason": "empty" if not cleaned else "unchanged",
+                },
+            )
+            self._memory.requeue_overflow(overflow)
+            return
+
+        self._memory.apply_summary(cleaned, timestamps=overflow_timestamps)
 
     def _build_chat(self, data: Dict[str, Any]) -> InboundChat:
         sender_id_raw = data.get("from_id", data.get("sender_id", ""))

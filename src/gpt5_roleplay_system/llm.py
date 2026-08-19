@@ -994,7 +994,11 @@ class OpenRouterLLMClient(LLMClient):
             self._max_tokens,
             self._temperature,
         )
-        return payload.strip() if payload else summary
+        # Return "" (not the previous summary) when the model produced nothing. Callers
+        # advance the summary timestamp watermark on any truthy result, so echoing the
+        # old summary back would claim coverage of messages it never described and the
+        # drained overflow would be discarded unsummarized.
+        return payload.strip() if payload else ""
 
     async def summarize_episode(self, messages: List[InboundChat]) -> str:
         if not self._api_key:

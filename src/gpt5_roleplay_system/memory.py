@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List
 
 from .models import InboundChat
+
+logger = logging.getLogger(__name__)
+
+# Soft threshold for the pending-summarization queue. The queue is NOT capped: it is
+# the only record of messages that have left recent() but are not yet described by the
+# summary, so discarding from it is unrecoverable history loss. Overflow grows without
+# bound during an LLM outage or while replies are disabled, and drains once
+# summarization succeeds again. Crossing this threshold is logged as a warning so a
+# stuck summarizer is visible before the queue gets large.
+OVERFLOW_WARN_THRESHOLD = 200
+
+# Ceiling on how far recent() may exceed max_recent while holding a tied-timestamp
+# group together. Tie preservation is meant to allow "slight temporary overage" only
+# (docs/PAYLOAD_DATA_QUALITY_REMEDIATION_PLAN.md section 5); without a ceiling, a
+# client that stamps every message with one timestamp would grow recent() forever and
+# push an unbounded prompt to the model. Past this multiple we split inside the tie
+# group instead. The split stays deterministic because insertion order is stable.
+MAX_RECENT_TIE_OVERAGE_FACTOR = 2
 
 
 @dataclass
@@ -63,6 +82,29 @@ class RollingBuffer:
             return
         if len(self._items) > keep:
             self._items = self._items[-keep:]
+
+    def trim_after_episode(self, summarized: List[MemoryItem], keep_last: int) -> int:
+        """Drop items covered by a finished episode, keeping `keep_last` as overlap.
+
+        Episode summarization awaits an LLM call, during which new messages can be
+        appended. Trimming by position (``trim_to_last``) would discard those new
+        messages even though they were never summarized. This removes only the items
+        that were actually in the summarized snapshot -- matched by identity, so it is
+        also safe if the buffer's own max-size trim dropped items from the front while
+        we were awaiting -- and preserves everything that arrived since.
+
+        Returns the number of retained overlap items (the caller's new episode
+        watermark).
+        """
+        keep = max(0, int(keep_last))
+        summarized_ids = {id(item) for item in summarized}
+        still_summarized = [item for item in self._items if id(item) in summarized_ids]
+        arrived_since = [item for item in self._items if id(item) not in summarized_ids]
+        overlap_tail = still_summarized[-keep:] if keep > 0 else []
+        # overlap_tail is older than arrived_since, so this preserves chronology.
+        self._items = overlap_tail + arrived_since
+        self._trim()
+        return len(overlap_tail)
 
     def _trim(self) -> None:
         if len(self._items) > self._max_items:
@@ -188,16 +230,21 @@ class ConversationMemory:
             "recent": list(self._recent),
             "summary": self._summary,
             "summary_meta": dict(self._summary_meta),
+            # Overflow is un-summarized history: messages that have left recent() but
+            # are not yet described by the summary. It must survive a restart, otherwise
+            # an outage spanning a restart silently loses the whole pending backlog.
+            "overflow": list(self._overflow),
         }
 
     def restore(self, state: Dict[str, Any]) -> None:
         recent = state.get("recent", []) if isinstance(state, dict) else []
         summary = state.get("summary", "") if isinstance(state, dict) else ""
         summary_meta = state.get("summary_meta", {}) if isinstance(state, dict) else {}
+        overflow = state.get("overflow", []) if isinstance(state, dict) else []
         self._recent = list(recent)[-self._max_recent :]
         self._summary = str(summary or "")
         self._summary_meta = dict(summary_meta) if isinstance(summary_meta, dict) else {}
-        self._overflow = []
+        self._overflow = list(overflow) if isinstance(overflow, list) else []
 
     def _compress_if_needed(self) -> None:
         if len(self._recent) <= self._max_recent:
@@ -209,19 +256,41 @@ class ConversationMemory:
         while split_index > 0 and float(self._recent[split_index - 1].timestamp or 0.0) == boundary_ts:
             split_index -= 1
         if split_index == 0:
-            # Keep tied timestamps together; allow temporary overage instead of unstable split.
-            return
+            # The tie group reaches the head of the buffer, so there is no clean
+            # boundary to split on. Prefer keeping the group together, but only while
+            # the overage stays slight -- otherwise a client that reuses one timestamp
+            # for every message would grow recent() without bound.
+            overage_limit = max(self._max_recent * MAX_RECENT_TIE_OVERAGE_FACTOR, self._max_recent + 1)
+            if len(self._recent) <= overage_limit:
+                return
+            # Forced split inside the tie group. Deterministic: insertion order is stable,
+            # so the same input sequence always splits at the same position.
+            split_index = len(self._recent) - self._max_recent
+            logger.warning(
+                "Recent-message tie group exceeded %d entries (max_recent=%d); splitting "
+                "inside a tied-timestamp group to bound context size. This usually means "
+                "inbound messages are not carrying distinct timestamps.",
+                overage_limit,
+                self._max_recent,
+            )
         overflow = self._recent[:split_index]
         self._recent = self._recent[split_index:]
         
         # We no longer automatically compress here to avoid generating naive/fake summaries
         # that poison the context window. We accumulate in the overflow buffer instead.
+        # Overflow is the only record of messages that have left recent() but are not
+        # yet covered by the summary, so it is never truncated -- an LLM outage or a
+        # disabled-reply period must be able to grow it arbitrarily without losing
+        # history. Warn once per threshold crossing so a stuck summarizer is visible.
+        previous_len = len(self._overflow)
         self._overflow.extend(overflow)
-        
-        # Enforce hard limit on overflow to avoid unbounded memory growth
-        MAX_OVERFLOW = 200
-        if len(self._overflow) > MAX_OVERFLOW:
-            self._overflow = self._overflow[-MAX_OVERFLOW:]
+        if previous_len < OVERFLOW_WARN_THRESHOLD <= len(self._overflow):
+            logger.warning(
+                "Overflow queue has grown past %d pending messages (now %d). Summarization "
+                "is not keeping up; history is retained but check summary_strategy and LLM health.",
+                OVERFLOW_WARN_THRESHOLD,
+                len(self._overflow),
+            )
 
     def _update_summary_meta(self, timestamps: List[float], now_ts: float) -> None:
         valid = [float(ts) for ts in timestamps if float(ts or 0.0) > 0.0]
