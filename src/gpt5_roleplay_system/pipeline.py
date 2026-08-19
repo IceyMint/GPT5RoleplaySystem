@@ -23,6 +23,7 @@ from .memory import (
 from .models import Action, CommandType, ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 from .time_utils import format_pacific_time
 from .autonomy_manager import AutonomyManager
+from .background import spawn_supervised
 from .context_builder import ContextBuilder
 from .episode_manager import EpisodeManager
 from .fact_manager import FactManager
@@ -51,6 +52,9 @@ REAPPEARANCE_THRESHOLD_SECONDS = 300.0
 REAPPEARANCE_SIGNAL_TTL_SECONDS = 180.0
 MENTION_INDEX_REFRESH_INTERVAL_SECONDS = 120.0
 MENTION_INDEX_MAX_SCAN_WORDS = 8
+# Cooldown after a failed fact sweep. Evidence is requeued rather than dropped, so
+# without this a persistently failing provider would retry on every inbound message.
+FACTS_RETRY_COOLDOWN_SECONDS = 60.0
 
 
 class ExperienceIndexProtocol(Protocol):
@@ -142,6 +146,7 @@ class MessagePipeline:
         self._facts_pending_since_ts = 0.0
         self._facts_pending_participants: Dict[str, Participant] = {}
         self._facts_task: asyncio.Task | None = None
+        self._facts_retry_not_before_ts = 0.0
         self._last_seen_cache: Dict[str, float] = {}
         self._reappearance_signals: Dict[str, Dict[str, float]] = {}
         episode = episode_config or EpisodeConfig()
@@ -1481,11 +1486,14 @@ class MessagePipeline:
         if not agents:
             return
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             self._update_last_seen_from_agents(agents, timestamp)
             return
-        loop.create_task(asyncio.to_thread(self._update_last_seen_from_agents, agents, timestamp))
+        spawn_supervised(
+            asyncio.to_thread(self._update_last_seen_from_agents, agents, timestamp),
+            label="last_seen_update",
+        )
 
     def _memory_items_to_chats(self, items: List[MemoryItem]) -> List[InboundChat]:
         chats: List[InboundChat] = []
@@ -1716,6 +1724,10 @@ class MessagePipeline:
         if self._facts_task is not None and not self._facts_task.done():
             return
         now = time.time()
+        # After a failed sweep the evidence is requeued; wait out a cooldown so a
+        # persistently failing provider doesn't cause an LLM call per inbound message.
+        if now < self._facts_retry_not_before_ts:
+            return
         flush_reason = self._fact_flush_reason(now, overflow_present)
         if not flush_reason:
             return
@@ -1749,39 +1761,91 @@ class MessagePipeline:
     ) -> None:
         remaining = list(pending_messages)
         chunk_index = 0
-        while remaining:
-            chunk = remaining[: self._facts_evidence_max_messages]
-            remaining = remaining[self._facts_evidence_max_messages :]
-            participants = self._participants_from_messages(chunk, pending_participants)
-            cursor_before = self._facts_cursor_ts
-            sweep = await asyncio.to_thread(self._extract_and_store_facts, chunk, participants)
-            max_ts = float(sweep.get("max_ts", 0.0) or 0.0)
-            if max_ts > self._facts_cursor_ts:
-                self._facts_cursor_ts = max_ts
-            payload = {
-                "mode": self._facts_mode,
-                "flush_reason": flush_reason if chunk_index == 0 else "drain",
-                "pending_before": pending_before if chunk_index == 0 else len(remaining) + len(chunk),
-                "pending_after": len(remaining),
-                "pending_age_seconds": pending_age_seconds if chunk_index == 0 else 0.0,
-                "messages": int(sweep.get("messages", len(chunk))),
-                "participants": int(sweep.get("participants", len(participants))),
-                "facts_extracted": int(sweep.get("facts_extracted", 0)),
-                "fact_strings_extracted": int(sweep.get("fact_strings_extracted", 0)),
-                "fact_strings_stored": int(sweep.get("fact_strings_stored", 0)),
-                "people_updated": int(sweep.get("people_updated", 0)),
-                "cursor_before": cursor_before,
-                "cursor_after": self._facts_cursor_ts,
-                "max_ts": max_ts,
-            }
-            reasoning_trace = sweep.get("reasoning")
-            if isinstance(reasoning_trace, dict) and reasoning_trace:
-                payload["reasoning"] = reasoning_trace
-            self._tracer.log_event("facts_sweep", payload)
-            chunk_index += 1
-        self._facts_task = None
+        try:
+            while remaining:
+                chunk = remaining[: self._facts_evidence_max_messages]
+                participants = self._participants_from_messages(chunk, pending_participants)
+                cursor_before = self._facts_cursor_ts
+                try:
+                    sweep = await asyncio.to_thread(self._extract_and_store_facts, chunk, participants)
+                except Exception:
+                    # Extraction failed (provider error, etc). The evidence was already
+                    # removed from the pending queue, so put it back instead of losing
+                    # it permanently (bug F). Keep the rest of the batch queued too.
+                    logger.exception(
+                        "Fact extraction failed for %d message(s); requeueing evidence.",
+                        len(chunk),
+                    )
+                    self._requeue_fact_evidence(remaining, pending_participants)
+                    self._facts_retry_not_before_ts = time.time() + FACTS_RETRY_COOLDOWN_SECONDS
+                    return
+                # Only drop the chunk from the work list once it actually succeeded.
+                remaining = remaining[self._facts_evidence_max_messages :]
+                max_ts = float(sweep.get("max_ts", 0.0) or 0.0)
+                if max_ts > self._facts_cursor_ts:
+                    self._facts_cursor_ts = max_ts
+                payload = {
+                    "mode": self._facts_mode,
+                    "flush_reason": flush_reason if chunk_index == 0 else "drain",
+                    "pending_before": pending_before if chunk_index == 0 else len(remaining) + len(chunk),
+                    "pending_after": len(remaining),
+                    "pending_age_seconds": pending_age_seconds if chunk_index == 0 else 0.0,
+                    "messages": int(sweep.get("messages", len(chunk))),
+                    "participants": int(sweep.get("participants", len(participants))),
+                    "facts_extracted": int(sweep.get("facts_extracted", 0)),
+                    "fact_strings_extracted": int(sweep.get("fact_strings_extracted", 0)),
+                    "fact_strings_stored": int(sweep.get("fact_strings_stored", 0)),
+                    "people_updated": int(sweep.get("people_updated", 0)),
+                    "cursor_before": cursor_before,
+                    "cursor_after": self._facts_cursor_ts,
+                    "max_ts": max_ts,
+                }
+                reasoning_trace = sweep.get("reasoning")
+                if isinstance(reasoning_trace, dict) and reasoning_trace:
+                    payload["reasoning"] = reasoning_trace
+                self._tracer.log_event("facts_sweep", payload)
+                chunk_index += 1
+        finally:
+            self._facts_task = None
         if self._facts_pending_messages:
             self._maybe_start_facts_worker()
+
+    def _requeue_fact_evidence(
+        self,
+        messages: List[InboundChat],
+        participants: List[Participant],
+    ) -> None:
+        """Return un-processed evidence to the pending queue after a failed sweep.
+
+        Restores chronological order (failed evidence is older than anything queued
+        since) and resets the pending-age clock so the retry is not treated as newly
+        arrived.
+        """
+        if not messages:
+            return
+        existing_keys = set(self._facts_pending_keys)
+        restored: List[InboundChat] = []
+        for message in messages:
+            key = self._fact_message_key(message)
+            if key in existing_keys:
+                continue
+            existing_keys.add(key)
+            restored.append(message)
+        if restored:
+            self._facts_pending_messages = restored + self._facts_pending_messages
+            self._facts_pending_keys = existing_keys
+            oldest = min(
+                (float(m.timestamp or 0.0) for m in restored if float(m.timestamp or 0.0) > 0.0),
+                default=0.0,
+            )
+            self._facts_pending_since_ts = oldest or time.time()
+        for participant in participants:
+            if self._is_ignored_user_id(participant.user_id):
+                continue
+            if self._is_self_participant(participant.user_id, participant.name):
+                continue
+            key = self._participant_key(participant.user_id, participant.name)
+            self._facts_pending_participants.setdefault(key, participant)
 
     def _extract_and_store_facts(self, messages: List[InboundChat], participants: List[Participant]) -> Dict[str, Any]:
         if not messages or not participants:
@@ -1874,7 +1938,10 @@ class MessagePipeline:
     def _schedule_store_facts(self, facts: List[ExtractedFact], participants: List[Participant]) -> None:
         if not facts:
             return
-        asyncio.create_task(asyncio.to_thread(self._store_facts, facts, participants))
+        spawn_supervised(
+            asyncio.to_thread(self._store_facts, facts, participants),
+            label="store_facts",
+        )
 
     def _update_participant_hints(self, hints: List[ParticipantHint]) -> None:
         if not hints:
@@ -2221,15 +2288,20 @@ class MessagePipeline:
         metadata = self._episode_metadata(snapshot, trigger_reason)
         record = self._experience_store.add(summary, metadata, persona_id=self._persona)
         if self._experience_vector_index and self._experience_vector_index.is_enabled():
-            asyncio.create_task(self._experience_vector_index.add_record_async(record, self._persona))
+            spawn_supervised(
+                self._experience_vector_index.add_record_async(record, self._persona),
+                label="experience_embedding",
+            )
 
         overlap = min(self._episode_overlap_messages, count)
-        self._rolling_buffer.trim_to_last(overlap)
+        # Trim by identity, not position: new messages may have arrived while we were
+        # awaiting the LLM above, and they were never summarized (bug D).
+        retained = self._rolling_buffer.trim_after_episode(snapshot, overlap)
         self._last_episode_ts = now
-        self._last_episode_size = overlap
+        self._last_episode_size = retained
         self._tracer.log_event(
             "episode_summary",
-            {"reason": trigger_reason, "messages": count, "overlap": overlap},
+            {"reason": trigger_reason, "messages": count, "overlap": retained},
         )
 
     async def _summarize_episode(self, items: List[Any]) -> str:
