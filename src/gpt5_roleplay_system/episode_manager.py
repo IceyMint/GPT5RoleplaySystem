@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any, Protocol
 
+from .background import spawn_supervised
 from .config import EpisodeConfig
 from .llm import LLMClient
 from .memory import ExperienceRecord, ExperienceStore, MemoryCompressor, RollingBuffer, SimpleMemoryCompressor
@@ -122,7 +123,10 @@ class EpisodeManager:
         metadata = self._episode_metadata(snapshot, trigger_reason)
         record = self._experience_store.add(summary, metadata, persona_id=persona)
         if self._experience_vector_index and self._experience_vector_index.is_enabled():
-            asyncio.create_task(self._experience_vector_index.add_record_async(record, persona))
+            spawn_supervised(
+                self._experience_vector_index.add_record_async(record, persona),
+                label="experience_embedding",
+            )
 
         overlap = min(self._episode_overlap_messages, count)
         self._rolling_buffer.trim_to_last(overlap)

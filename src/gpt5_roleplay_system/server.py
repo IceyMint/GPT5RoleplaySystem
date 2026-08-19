@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from .background import spawn_supervised
 from .background_tasks import ExperienceDeduplicationService, FactsDeduplicationService
 from .config import AutonomyConfig, ServerConfig, load_config
 from .controller import SessionController
@@ -44,7 +45,13 @@ class StatusChannelErrorHandler(logging.Handler):
         text = _format_error_text(record, message)
 
         def _schedule() -> None:
-            asyncio.create_task(self._server._broadcast_status_chat(text, channel=self._channel, source="error"))
+            # quiet=True: this task *is* the error-reporting path. Logging its failure
+            # at ERROR would re-enter this handler and loop.
+            spawn_supervised(
+                self._server._broadcast_status_chat(text, channel=self._channel, source="error"),
+                label="error_broadcast",
+                quiet=True,
+            )
 
         loop.call_soon_threadsafe(_schedule)
 
@@ -421,14 +428,22 @@ async def _autonomy_loop(
 ) -> None:
     window = autonomy.recent_activity_window_seconds
     while True:
-        snapshot = session.controller.activity_snapshot(window)
-        suggested_delay_seconds = session.controller.consume_autonomy_delay_hint_seconds()
-        delay = _compute_autonomy_delay(snapshot, autonomy, suggested_delay_seconds=suggested_delay_seconds)
-        await asyncio.sleep(delay)
-        if queue.full():
-            logger.warning("Dropped autonomous tick for %s: queue full", session.session_id)
-            continue
-        queue.put_nowait(("autonomous_tick", {"recent_activity_window_seconds": window}))
+        try:
+            snapshot = session.controller.activity_snapshot(window)
+            suggested_delay_seconds = session.controller.consume_autonomy_delay_hint_seconds()
+            delay = _compute_autonomy_delay(snapshot, autonomy, suggested_delay_seconds=suggested_delay_seconds)
+            await asyncio.sleep(delay)
+            if queue.full():
+                logger.warning("Dropped autonomous tick for %s: queue full", session.session_id)
+                continue
+            queue.put_nowait(("autonomous_tick", {"recent_activity_window_seconds": window}))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # One bad tick must not kill autonomy for the rest of the connection.
+            # Log and continue after a short backoff. (_status_loop already does this.)
+            logger.exception("Autonomy loop error for %s; continuing", session.session_id)
+            await asyncio.sleep(min(5.0, max(1.0, autonomy.min_delay_seconds)))
 
 
 async def _status_loop(session: ClientSession, autonomy: AutonomyConfig) -> None:

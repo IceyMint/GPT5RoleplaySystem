@@ -5,6 +5,7 @@ import time
 from difflib import SequenceMatcher
 from typing import Any, Dict, Protocol
 
+from .background import spawn_supervised
 from .memory import ConversationMemory, ExperienceRecord, ExperienceStore, MemoryItem, TokenSimilaritySearch
 from .models import ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 from .name_utils import (
@@ -550,7 +551,10 @@ class ContextBuilder:
         except RuntimeError:
             self._update_last_seen_from_agents(agents, timestamp)
             return
-        loop.create_task(asyncio.to_thread(self._update_last_seen_from_agents, agents, timestamp))
+        spawn_supervised(
+            asyncio.to_thread(self._update_last_seen_from_agents, agents, timestamp),
+            label="last_seen_update",
+        )
 
     def _participant_key(self, user_id: str, name: str) -> str:
         key = canonical_identity_key(user_id, name)

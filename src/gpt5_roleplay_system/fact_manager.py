@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any
 
+from .background import spawn_supervised
 from .config import FactsConfig
 from .llm import ExtractedFact, LLMClient
 from .memory import MemoryItem
@@ -142,7 +143,10 @@ class FactManager:
             return
         if not facts:
             return
-        asyncio.create_task(asyncio.to_thread(self.store_facts, facts, participants))
+        spawn_supervised(
+            asyncio.to_thread(self.store_facts, facts, participants),
+            label="store_facts",
+        )
 
     def store_facts(
         self,
