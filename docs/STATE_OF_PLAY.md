@@ -1,6 +1,6 @@
 # State of Play — Orientation
 
-**Last updated:** 2026-08-18
+**Last updated:** 2026-08-21
 
 Read this first when returning to the project after time away. It records what is
 *verified true* about the running system, what is fixed, what is still broken, and
@@ -36,14 +36,30 @@ gaps or overlap:**
 - **`summary`** — LLM-written prose covering everything older. Carries
   `summary_meta.range_end_ts`, a watermark meaning "summary covers up to here."
 
-**The trap:** `_filter_overflow_against_summary()` discards any overflow message at or
-below `range_end_ts`. So advancing that watermark *without* genuinely summarizing
-destroys history permanently. Only advance the watermark when the summary text
-actually changed.
+**The trap:** `_filter_overflow_against_summary()` discards overflow already covered by
+the summary. Advancing that watermark *without* genuinely summarizing destroys history
+permanently. Only advance the watermark when the summary text actually changed.
+
+**Timestamps are not identities.** The protocol accepts integer unix seconds and a
+batch shares one timestamp, so `ts <= watermark` cannot mean "already covered". Every
+coverage check (summary, episodes, facts) is keyed by `MemoryItem.item_id` /
+`_fact_message_key`, with the timestamp watermark only as the coarse fallback. An item
+sitting *exactly* on a watermark is ambiguous and must be proven covered before it is
+dropped.
 
 **Episodes** are separate from all of the above. The `rolling_buffer` accumulates
 messages; on an episode boundary it is summarized into one `Experience` and embedded
-into Neo4j for semantic recall.
+into Neo4j for semantic recall. `max_rolling_buffer` is a *retention target*, not a
+hard cap — the buffer is the only copy of un-summarized episodic input, so it is
+drained only by `trim_after_episode()` after real summarization. Appending never
+discards.
+
+**The general rule (the one that keeps being violated):** overflow, the rolling buffer,
+and the pending fact-evidence queue are each the *only copy* of un-processed history.
+None of them may be capped, truncated, or dropped on a failure path. They shrink only
+after their contents have actually been summarized or stored. Every bug in §5b was a
+violation of this one sentence.
+
 
 ---
 
@@ -153,11 +169,51 @@ If `experience_embedding` or `store_facts` appear, bugs D/F below are firing for
 
 | # | Bug | Where |
 |---|---|---|
-| G | `set_user_id()` reloads disk state **over** live session state | `controller._reset_state_store` |
-| B | `restore()` truncates `recent` to `max_recent` with no summary compensation | `memory.restore` |
-| J/H | No startup validation that `episode.max_messages < max_rolling_buffer` (both are 30 — the trigger is borderline unreachable) | config |
+| — | Persistence is keyed by **persona only** (`session_state_<persona>.json`); `user_id` no longer participates. Two user_ids under one persona share a file. This is deliberate (`tests/test_controller.py`) but contradicts `docs/STATE_PERSISTENCE.md`. Decide which is authoritative. | `session_state.py:29-36` |
+| — | `_slug()` is non-injective: `Alice/Bob` and `Alice?Bob` both become `Alice_Bob`, so distinct personas can collide on one state file. | `session_state.py:13-15` |
+| — | A stale `_apply_overflow_summary` completion can overwrite a newer summary. Requires concurrent direct pipeline calls; the server queue serializes chat, so it is not reachable in normal operation. | `pipeline.py` `_apply_overflow_summary` |
+| — | `drain_background_tasks()` snapshots the task set once, so it can return while a task spawned *during* the drain is still running. | `background.py:103-104` |
 
 ---
+
+## 5b. Fixed in the data-loss audit (2026-08-21)
+
+All twelve were confirmed with an executed repro against live code, then proven
+load-bearing by re-introducing the original bug and watching the test go red.
+Regression suite: `tests/test_data_loss_regressions.py`. Full suite: **218 passing.**
+
+**The unifying invariant:** *a queue that is the only copy of un-processed history
+(overflow, rolling buffer, pending fact evidence) must never be truncated, and must
+never be dropped on a failure path. It may only shrink after the content has actually
+been summarized or stored.* Every bug below was a violation of it.
+
+| # | Bug | Fix |
+|---|---|---|
+| V1 | **Critical.** Overflow was drained at `pipeline.py:592`, then any later raise (`build_context`, address check, `generate_bundle`) destroyed it — only `_apply_overflow_summary` requeued. A provider 500 silently ate history. | The whole turn is wrapped in `try/finally` with an `overflow_settled` flag; unowned overflow is requeued on every abnormal exit. |
+| V2 | **Critical.** `set_user_id()` → `_reset_state_store()` reloaded disk state *over* live memory, and the stale state then overwrote the good file on flush. (open bug G) | `set_user_id` now only rotates where saves land (`_rebind_state_store(load=False)`), matching `_sync_user_id_from_pipeline`. |
+| V3 | Switching to a persona with no state file left the previous persona's history live, then wrote it into the new persona's file. Privacy + correctness. | `set_persona` saves under the *outgoing* persona's key first, then loads the new one, clearing when absent. |
+| V4/V12 | `RollingBuffer._trim()` discarded the oldest un-summarized messages on every append. With `max_rolling_buffer == episode.max_messages == 30`, the max-messages trigger lost a message *every time it fired*; batches lost more. | `_trim()` no longer discards — it only warns. Draining happens exclusively in `trim_after_episode()`, after real summarization. |
+| V5 | `ConversationMemory.restore()` sliced `recent` to `max_recent`, destroying the remainder with no summary compensation. Reachable at unchanged config via legitimate tie overage. (open bug B) | Displaced items move to the end of the overflow backlog instead of being dropped. |
+| V6 | Fact worker only requeued on *extraction* errors. Any later raise (tracer, cancellation) destroyed the un-processed tail, and `finally` cleared the handle so the exception was unobservable. | Added `except BaseException` that requeues `remaining` before re-raising. |
+| V7 | `_schedule_state_save()` returned silently while a save was in flight, with no dirty flag — newer state never reached disk until a graceful flush. | `_state_save_pending` flag; the in-flight task performs a trailing save. |
+| V8 | Episode "new items" used `count - last_episode_size`. Once the buffer sat at retention size, arrivals *replaced* overlap without changing length, so new traffic never registered and episodes stalled permanently. | Counted by message identity against `_episode_covered_ids` (persisted in snapshot). |
+| V9 | Fact cursor compared timestamps only (`<=`), so a distinct message sharing the cursor's timestamp was skipped as "already swept". Integer unix seconds make ties normal. | `<` plus an explicit `_facts_swept_keys` check for the ambiguous equal case. |
+| V10 | Pending fact evidence was capped at `3 × evidence_max_messages`, **keeping the newest** — the classic backlog-vs-cache inversion. A long outage destroyed the oldest un-swept evidence. | Cap removed; `FACTS_PENDING_WARN_THRESHOLD` warns instead. |
+| V11 | `_filter_overflow_against_summary` dropped everything `<= range_end_ts`, so later messages tied to the watermark were treated as summarized and discarded. | Items *exactly* at the watermark are only dropped when `memory.is_summarized(item)` confirms real coverage. |
+
+Supporting change: `MemoryItem` gained a stable `item_id` (persisted through
+`session_state.py`). Timestamps cannot identify a message — the protocol accepts
+integer unix seconds and batches share one timestamp — so all coverage bookkeeping
+(summary, episodes, facts) is keyed by identity, with the timestamp watermark kept
+only as the coarse fallback.
+
+Two pre-existing tests asserted the buggy behavior and were rewritten to assert the
+requirement instead: `test_rolling_buffer_trims` (asserted the destructive trim) and
+`test_pipeline_filters_overflow_already_covered_by_summary_meta` (faked coverage by
+writing `_summary_meta` directly; now records coverage through `apply_summary`).
+
+---
+
 
 ## 7. Operational facts (verified against the live system)
 

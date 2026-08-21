@@ -24,13 +24,27 @@ def _chat_at(text: str, timestamp: float) -> InboundChat:
     )
 
 
-def test_rolling_buffer_trims():
+def test_rolling_buffer_retains_unsummarized_messages_past_max_items():
+    """max_items is a retention target, not a licence to destroy episodic input.
+
+    The buffer is the only copy of messages awaiting episode summarization, so
+    appending past max_items must NOT drop the oldest ones -- that permanently
+    excluded them from episodic memory (and, when max_items equalled
+    episode.max_messages, lost a message every time the trigger fired). Draining
+    happens in trim_after_episode(), after the content has actually been summarized.
+    """
     buffer = RollingBuffer(max_items=2)
     buffer.add_user_message(_chat("one"))
     buffer.add_user_message(_chat("two"))
     buffer.add_user_message(_chat("three"))
-    assert len(buffer.items()) == 2
-    assert buffer.items()[-1].text == "three"
+
+    texts = [item.text for item in buffer.items()]
+    assert texts == ["one", "two", "three"], "un-summarized episodic input must not be discarded"
+
+    # It drains only once an episode has actually covered the content.
+    summarized = buffer.snapshot()
+    buffer.trim_after_episode(summarized, keep_last=1)
+    assert [item.text for item in buffer.items()] == ["three"]
 
 
 def test_conversation_memory_compresses():

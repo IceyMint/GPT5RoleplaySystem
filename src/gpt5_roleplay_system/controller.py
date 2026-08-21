@@ -87,6 +87,7 @@ class SessionController:
         )
         self._state_store: SessionStateStore | None = None
         self._state_task: asyncio.Task | None = None
+        self._state_save_pending = False
         self._reset_state_store()
 
     async def process_chat(self, data: Dict[str, Any]) -> List[Action]:
@@ -109,14 +110,27 @@ class SessionController:
         self._pipeline.update_environment(data)
 
     def set_persona(self, persona: str) -> None:
+        if persona == self._persona:
+            return
+        previous_persona = self._persona
         self._persona = persona
         self._pipeline.set_persona(persona)
-        self._reset_state_store()
+        # A persona change is a different conversation identity. Persist the outgoing
+        # persona's state under ITS OWN key first, then hand the pipeline the new
+        # persona's state -- clearing when there is none, so the previous persona's
+        # history is never left live (and never written into the new persona's file).
+        self._save_state_now(persona=previous_persona)
+        self._rebind_state_store(load=True, clear_when_missing=True)
 
     def set_user_id(self, user_id: str) -> None:
+        if user_id == self._user_id:
+            return
         self._user_id = user_id
         self._pipeline.set_user_id(user_id)
-        self._reset_state_store()
+        # Do NOT reload disk state here: the live session is already mid-conversation and
+        # restoring would overwrite newer in-memory history that has not been saved yet.
+        # Only rotate where future saves land, matching _sync_user_id_from_pipeline().
+        self._rebind_state_store(load=False, clear_when_missing=False)
 
     def set_llm_chat_enabled(self, enabled: bool) -> None:
         self._pipeline.set_llm_chat_enabled(enabled)
@@ -152,7 +166,11 @@ class SessionController:
         self._save_state_now()
 
     def _reset_state_store(self) -> None:
+        """Initial binding at construction: load persisted state into a fresh session."""
         self._schedule_state_save()
+        self._rebind_state_store(load=True, clear_when_missing=False)
+
+    def _rebind_state_store(self, *, load: bool, clear_when_missing: bool) -> None:
         if not self._episode_config.persist_state or is_chat_and_state_restricted_persona(self._persona):
             self._state_store = None
             return
@@ -161,9 +179,18 @@ class SessionController:
             persona=self._persona,
             user_id=self._user_id,
         )
+        if not load:
+            return
         state = self._state_store.load()
         if state:
             self._pipeline.restore_state(state)
+        elif clear_when_missing:
+            # No saved state for this identity. Anything currently live belongs to the
+            # PREVIOUS identity, so it must not stay in the session or be written out
+            # under the new key.
+            self._pipeline.restore_state(
+                {"rolling_buffer": [], "memory": {"recent": [], "summary": "", "summary_meta": {}, "overflow": []}}
+            )
 
     def _schedule_state_save(self) -> None:
         if is_chat_and_state_restricted_persona(self._persona):
@@ -172,16 +199,44 @@ class SessionController:
         if store is None:
             return
         if self._state_task and not self._state_task.done():
+            # A save is already running against an older snapshot. Remember that newer
+            # state exists so it is written once the in-flight save finishes, instead of
+            # silently dropping this request and leaving disk stale until shutdown.
+            self._state_save_pending = True
             return
-        snapshot = self._pipeline.snapshot_state()
-        self._state_task = asyncio.create_task(asyncio.to_thread(store.save, snapshot))
+        self._start_state_save(store)
 
-    def _save_state_now(self) -> None:
-        if is_chat_and_state_restricted_persona(self._persona):
+    def _start_state_save(self, store: SessionStateStore) -> None:
+        self._state_save_pending = False
+        snapshot = self._pipeline.snapshot_state()
+
+        async def _run() -> None:
+            await asyncio.to_thread(store.save, snapshot)
+            if self._state_save_pending:
+                self._state_save_pending = False
+                current = self._state_store
+                if current is not None:
+                    await asyncio.to_thread(current.save, self._pipeline.snapshot_state())
+
+        self._state_task = asyncio.create_task(_run())
+
+    def _save_state_now(self, persona: str | None = None) -> None:
+        target_persona = self._persona if persona is None else persona
+        if is_chat_and_state_restricted_persona(target_persona):
             return
-        store = self._state_store
+        if persona is None:
+            store = self._state_store
+        else:
+            if not self._episode_config.persist_state:
+                return
+            store = SessionStateStore(
+                state_dir=self._episode_config.state_dir,
+                persona=target_persona,
+                user_id=self._user_id,
+            )
         if store is None:
             return
+        self._state_save_pending = False
         snapshot = self._pipeline.snapshot_state()
         store.save(snapshot)
 

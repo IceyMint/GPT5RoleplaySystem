@@ -7,7 +7,12 @@ from gpt5_roleplay_system.models import Action, CommandType
 from gpt5_roleplay_system.neo4j_store import InMemoryKnowledgeStore
 from gpt5_roleplay_system.observability import NoOpTracer
 from gpt5_roleplay_system.protocol import decode_message
-from gpt5_roleplay_system.server import GPT5RoleplayServer, _compute_autonomy_delay, _status_loop
+from gpt5_roleplay_system.server import (
+    GPT5RoleplayServer,
+    _compute_autonomy_delay,
+    _format_idle_duration,
+    _status_loop,
+)
 from gpt5_roleplay_system.session import ClientSession
 
 
@@ -265,6 +270,19 @@ def test_connection_starts_with_llm_chat_disabled():
     assert CaptureController.created[0].enabled_values == [False]
 
 
+def test_idle_duration_display_uses_relevant_units():
+    # Seconds are useful below an hour. Once the display reaches hours, omit seconds
+    # and show only the readable, stable hour/minute duration.
+    assert _format_idle_duration(0) == "0 sec"
+    assert _format_idle_duration(59.9) == "59 sec"
+    assert _format_idle_duration(60) == "1 min"
+    assert _format_idle_duration(1021) == "17 min 1 sec"
+    assert _format_idle_duration(3599) == "59 min 59 sec"
+    assert _format_idle_duration(3600) == "1 hr"
+    assert _format_idle_duration(3721) == "1 hr 2 min"
+    assert _format_idle_duration(7200) == "2 hr"
+
+
 def test_status_loop_emits_payload_and_exits_on_disconnect():
     controller = StubController()
     session = ClientSession(
@@ -317,6 +335,7 @@ def test_status_loop_emits_chat_on_configured_channel():
     assert actions_sent, "status chat action was not emitted"
     params = actions_sent[0].parameters
     assert params.get("channel") == -9001
+    assert actions_sent[0].content.endswith("Idle: 2 min")
 
 
 def test_error_logs_broadcast_to_status_channel():

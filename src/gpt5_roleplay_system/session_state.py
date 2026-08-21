@@ -16,13 +16,19 @@ def _slug(value: str) -> str:
 
 
 def _memory_item_from_dict(raw: Dict[str, Any]) -> MemoryItem:
-    return MemoryItem(
+    item = MemoryItem(
         text=str(raw.get("text", "") or ""),
         sender_id=str(raw.get("sender_id", "") or ""),
         sender_name=str(raw.get("sender_name", "") or ""),
         timestamp=float(raw.get("timestamp", 0.0) or 0.0),
         metadata=dict(raw.get("metadata", {}) or {}),
     )
+    # Preserve message identity across restarts so summary-coverage bookkeeping keeps
+    # working. Legacy state files without item_id keep the freshly generated one.
+    saved_id = str(raw.get("item_id", "") or "")
+    if saved_id:
+        item.item_id = saved_id
+    return item
 
 
 class SessionStateStore:

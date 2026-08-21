@@ -26,6 +26,22 @@ OVERFLOW_WARN_THRESHOLD = 200
 # group instead. The split stays deterministic because insertion order is stable.
 MAX_RECENT_TIE_OVERAGE_FACTOR = 2
 
+# Soft threshold for the rolling buffer. Like overflow, the rolling buffer is the ONLY
+# copy of its contents: nothing else summarizes episodic input, so anything trimmed out
+# of it before an episode boundary is permanently excluded from episodic memory. It is
+# therefore not capped destructively -- it is drained by
+# RollingBuffer.trim_after_episode() once an episode has actually been summarized.
+# Crossing this multiple of max_items only logs a warning so a stalled episode
+# summarizer is visible.
+ROLLING_BUFFER_WARN_FACTOR = 4
+
+# Upper bound on remembered summarized-message identities. This set exists only to
+# disambiguate tied timestamps at the summary boundary, so a bounded recent window is
+# sufficient; the timestamp watermark still covers anything older.
+SUMMARIZED_ID_MEMORY_LIMIT = 2000
+
+
+
 
 @dataclass
 class MemoryItem:
@@ -34,6 +50,11 @@ class MemoryItem:
     sender_name: str
     timestamp: float
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Stable per-message identity. Timestamps alone cannot identify a message: the
+    # protocol accepts integer unix seconds, and batched arrivals routinely share one
+    # timestamp. Coverage watermarks that compared timestamps only would classify a
+    # later, distinct message as "already summarized" and discard it.
+    item_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class RollingBuffer:
@@ -73,7 +94,11 @@ class RollingBuffer:
         if not items:
             self._items = []
             return
-        self._items = list(items)[-self._max_items :]
+        # Do NOT truncate to max_items here: these are un-summarized episodic messages
+        # and this buffer is their only copy. Dropping them would silently exclude them
+        # from episodic memory forever.
+        self._items = list(items)
+        self._warn_if_oversized()
 
     def trim_to_last(self, keep_last: int) -> None:
         keep = max(0, int(keep_last))
@@ -107,8 +132,27 @@ class RollingBuffer:
         return len(overlap_tail)
 
     def _trim(self) -> None:
-        if len(self._items) > self._max_items:
-            self._items = self._items[-self._max_items :]
+        """Warn when the buffer is oversized -- never discard.
+
+        This buffer feeds episode summarization and is the only copy of those messages.
+        It previously trimmed to max_items on every append, which silently dropped the
+        oldest un-summarized messages before the episode boundary could fire (and, with
+        max_items == episode.max_messages, made the max-messages trigger drop a message
+        every time it fired). Draining now happens exclusively in trim_after_episode(),
+        after the content has actually been summarized.
+        """
+        self._warn_if_oversized()
+
+    def _warn_if_oversized(self) -> None:
+        limit = max(self._max_items * ROLLING_BUFFER_WARN_FACTOR, self._max_items + 1)
+        if len(self._items) > limit:
+            logger.warning(
+                "Rolling buffer holds %d un-summarized messages (max_items=%d). Episode "
+                "summarization is not keeping up; history is retained but check "
+                "episode_summary settings and LLM health.",
+                len(self._items),
+                self._max_items,
+            )
 
 
 class MemoryCompressor:
@@ -138,6 +182,7 @@ class ConversationMemory:
         self._summary = ""
         self._summary_meta: Dict[str, Any] = {}
         self._overflow: List[MemoryItem] = []
+        self._summarized_ids: set[str] = set()
 
     def add_message(self, chat: InboundChat) -> None:
         self._recent.append(
@@ -184,7 +229,12 @@ class ConversationMemory:
         self._summary_meta["range_end_ts"] = float(limit)
         return True
 
-    def apply_summary(self, summary: str, timestamps: List[float] | None = None) -> None:
+    def apply_summary(
+        self,
+        summary: str,
+        timestamps: List[float] | None = None,
+        items: Iterable[MemoryItem] | None = None,
+    ) -> None:
         cleaned = summary.strip()
         if not cleaned:
             self._summary = ""
@@ -192,6 +242,8 @@ class ConversationMemory:
             return
         self._summary = cleaned
         self._update_summary_meta(timestamps or [], time.time())
+        if items is not None:
+            self.mark_summarized(items)
 
     def drain_overflow(self) -> List[MemoryItem]:
         overflow = self._overflow
@@ -222,6 +274,7 @@ class ConversationMemory:
         self._summary = cleaned_summary
         timestamps = [float(item.timestamp or 0.0) for item in items]
         self._update_summary_meta(timestamps, time.time())
+        self.mark_summarized(items)
         if overflow is None:
             self._overflow = []
 
@@ -234,6 +287,10 @@ class ConversationMemory:
             # are not yet described by the summary. It must survive a restart, otherwise
             # an outage spanning a restart silently loses the whole pending backlog.
             "overflow": list(self._overflow),
+            # Which messages the summary actually covers. Without this, a restart falls
+            # back to the timestamp watermark alone and can re-classify tied-timestamp
+            # messages as summarized.
+            "summarized_ids": list(self._summarized_ids),
         }
 
     def restore(self, state: Dict[str, Any]) -> None:
@@ -241,10 +298,31 @@ class ConversationMemory:
         summary = state.get("summary", "") if isinstance(state, dict) else ""
         summary_meta = state.get("summary_meta", {}) if isinstance(state, dict) else {}
         overflow = state.get("overflow", []) if isinstance(state, dict) else []
-        self._recent = list(recent)[-self._max_recent :]
+        recent_items = list(recent)
+        self._overflow = list(overflow) if isinstance(overflow, list) else []
+        # Anything beyond max_recent is un-summarized history, not disposable padding:
+        # truncating it here silently destroyed conversation history on every reconnect.
+        # Displaced items are older than everything already in recent, and older than
+        # nothing currently queued, so they belong at the END of the overflow backlog
+        # (overflow holds strictly-older-than-recent messages in chronological order).
+        if len(recent_items) > self._max_recent:
+            displaced = recent_items[: len(recent_items) - self._max_recent]
+            self._recent = recent_items[len(recent_items) - self._max_recent :]
+            self._overflow = self._overflow + displaced
+            logger.info(
+                "Restored %d message(s) beyond max_recent=%d into the pending-summarization "
+                "queue instead of discarding them.",
+                len(displaced),
+                self._max_recent,
+            )
+        else:
+            self._recent = recent_items
         self._summary = str(summary or "")
         self._summary_meta = dict(summary_meta) if isinstance(summary_meta, dict) else {}
-        self._overflow = list(overflow) if isinstance(overflow, list) else []
+        summarized_ids = state.get("summarized_ids", []) if isinstance(state, dict) else []
+        self._summarized_ids = {
+            str(value) for value in summarized_ids if str(value or "")
+        } if isinstance(summarized_ids, list) else set()
 
     def _compress_if_needed(self) -> None:
         if len(self._recent) <= self._max_recent:
@@ -311,6 +389,27 @@ class ConversationMemory:
             "range_start_ts": float(range_start or 0.0),
             "range_end_ts": float(range_end or 0.0),
         }
+
+    def mark_summarized(self, items: Iterable[MemoryItem]) -> None:
+        """Record exactly which messages the summary describes.
+
+        The timestamp watermark alone is ambiguous when messages share a timestamp, so
+        callers use this set to tell "covered by the summary" from "merely at or below
+        range_end_ts". Bounded to avoid unbounded growth over a long session; the
+        timestamp watermark remains the coarse fallback for evicted entries.
+        """
+        for item in items:
+            item_id = str(getattr(item, "item_id", "") or "")
+            if item_id:
+                self._summarized_ids.add(item_id)
+        if len(self._summarized_ids) > SUMMARIZED_ID_MEMORY_LIMIT:
+            excess = len(self._summarized_ids) - SUMMARIZED_ID_MEMORY_LIMIT
+            for item_id in list(self._summarized_ids)[:excess]:
+                self._summarized_ids.discard(item_id)
+
+    def is_summarized(self, item: MemoryItem) -> bool:
+        item_id = str(getattr(item, "item_id", "") or "")
+        return bool(item_id) and item_id in self._summarized_ids
 
 
 @dataclass

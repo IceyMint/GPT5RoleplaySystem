@@ -52,9 +52,21 @@ REAPPEARANCE_THRESHOLD_SECONDS = 300.0
 REAPPEARANCE_SIGNAL_TTL_SECONDS = 180.0
 MENTION_INDEX_REFRESH_INTERVAL_SECONDS = 120.0
 MENTION_INDEX_MAX_SCAN_WORDS = 8
+# Bound on remembered episode-covered message identities. Episode membership is tracked
+# by identity because buffer-length arithmetic cannot distinguish "same length" from
+# "same messages" once the buffer reaches its retention size.
+EPISODE_COVERED_ID_LIMIT = 5000
+
 # Cooldown after a failed fact sweep. Evidence is requeued rather than dropped, so
 # without this a persistently failing provider would retry on every inbound message.
 FACTS_RETRY_COOLDOWN_SECONDS = 60.0
+# Soft threshold for the un-swept fact evidence queue. Like overflow and the rolling
+# buffer, this queue is the only copy of its contents, so it is not capped.
+FACTS_PENDING_WARN_THRESHOLD = 200
+# Bound on remembered swept-message keys, used only to disambiguate messages sitting
+# exactly on the cursor timestamp.
+FACTS_SWEPT_KEY_LIMIT = 2000
+
 
 
 class ExperienceIndexProtocol(Protocol):
@@ -143,6 +155,7 @@ class MessagePipeline:
         self._facts_cursor_ts = 0.0
         self._facts_pending_messages: List[InboundChat] = []
         self._facts_pending_keys: Set[str] = set()
+        self._facts_swept_keys: Set[str] = set()
         self._facts_pending_since_ts = 0.0
         self._facts_pending_participants: Dict[str, Participant] = {}
         self._facts_task: asyncio.Task | None = None
@@ -158,6 +171,7 @@ class MessagePipeline:
         self._episode_overlap_messages = max(0, int(episode.overlap_messages))
         self._last_episode_ts = 0.0
         self._last_episode_size = 0
+        self._episode_covered_ids: Set[str] = set()
         self._episode_task: asyncio.Task | None = None
         now = time.time()
         self._last_inbound_ts = now
@@ -247,6 +261,7 @@ class MessagePipeline:
             "episode": {
                 "last_episode_ts": self._last_episode_ts,
                 "last_episode_size": self._last_episode_size,
+                "covered_ids": list(self._episode_covered_ids),
             },
             "status": {
                 "mood": self._current_mood,
@@ -345,6 +360,16 @@ class MessagePipeline:
         if isinstance(episode_state, dict):
             self._last_episode_ts = float(episode_state.get("last_episode_ts", 0.0) or 0.0)
             self._last_episode_size = int(episode_state.get("last_episode_size", 0) or 0)
+            covered_raw = episode_state.get("covered_ids", [])
+            if isinstance(covered_raw, list):
+                self._episode_covered_ids = {str(value) for value in covered_raw if str(value or "")}
+            else:
+                self._episode_covered_ids = set()
+            if not self._episode_covered_ids and self._last_episode_size > 0:
+                # Legacy state predates identity tracking. Treat the retained overlap tail
+                # as already covered so the first post-restore episode is not double-counted.
+                retained = self._rolling_buffer.items()[: self._last_episode_size]
+                self._mark_episode_covered(list(retained))
         status_state = state.get("status", {})
         if isinstance(status_state, dict):
             mood = status_state.get("mood", self._current_mood)
@@ -592,93 +617,110 @@ class MessagePipeline:
         overflow = self._filter_overflow_against_summary(self._memory.drain_overflow())
         overflow_chats = self._memory_items_to_chats(overflow)
         overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
-        recent_chats = self._memory_items_to_chats(self._memory.recent())
-        participants = self._normalize_participants(
-            self._participants_from_messages(
-                recent_chats + overflow_chats + non_self_chats,
+        # Overflow has now left the memory queue and this list is its only copy. Every
+        # exit path below -- including an exception from any LLM call -- must either
+        # summarize it or put it back, or the history is destroyed.
+        overflow_settled = False
+        try:
+            recent_chats = self._memory_items_to_chats(self._memory.recent())
+            participants = self._normalize_participants(
+                self._participants_from_messages(
+                    recent_chats + overflow_chats + non_self_chats,
+                    participants,
+                )
+            )
+
+            primary_chat = self._select_primary_incoming_chat(non_self_chats)
+            context = await self._context_builder_component.build_context(
+                primary_chat,
                 participants,
+                agent_state=self._agent_state(),
             )
-        )
 
-        primary_chat = self._select_primary_incoming_chat(non_self_chats)
-        context = await self._context_builder_component.build_context(
-            primary_chat,
-            participants,
-            agent_state=self._agent_state(),
-        )
+            # Add messages to history AFTER building context to avoid duplication
+            # of the current message in 'recent_messages' vs 'incoming'.
+            for chat in non_self_chats:
+                self._rolling_buffer.add_user_message(chat)
+                self._memory.add_message(chat)
 
-        # Add messages to history AFTER building context to avoid duplication
-        # of the current message in 'recent_messages' vs 'incoming'.
-        for chat in non_self_chats:
-            self._rolling_buffer.add_user_message(chat)
-            self._memory.add_message(chat)
+            self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, overflow_chats, participants)
 
-        self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, overflow_chats, participants)
+            addressed = False
+            for chat in non_self_chats:
+                self._tracer.log_event(
+                    "llm_address_check",
+                    {
+                        "sender": chat.sender_id or chat.sender_name,
+                        "text": chat.text,
+                        "persona": self._persona,
+                        "participants": [(p.user_id or p.name) for p in participants[:10]],
+                        "location": self._environment.location,
+                    },
+                )
+                is_addressed = await self._llm.is_addressed_to_me(
+                    chat,
+                    self._persona,
+                    self._environment,
+                    participants,
+                    context,
+                )
+                self._log_quality_fallbacks()
+                self._tracer.log_event(
+                    "llm_address_result",
+                    {"sender": chat.sender_id or chat.sender_name, "addressed": bool(is_addressed)},
+                )
+                if is_addressed:
+                    addressed = True
+                    break
+            if not addressed:
+                if overflow:
+                    await self._apply_overflow_summary(overflow, overflow_chats, overflow_timestamps)
+                overflow_settled = True
+                self._enforce_summary_before_recent(reason="not_addressed")
+                self._schedule_episode_check()
+                return []
 
-        addressed = False
-        for chat in non_self_chats:
-            self._tracer.log_event(
-                "llm_address_check",
-                {
-                    "sender": chat.sender_id or chat.sender_name,
-                    "text": chat.text,
-                    "persona": self._persona,
-                    "participants": [(p.user_id or p.name) for p in participants[:10]],
-                    "location": self._environment.location,
-                },
-            )
-            is_addressed = await self._llm.is_addressed_to_me(
-                chat,
-                self._persona,
-                self._environment,
-                participants,
-                context,
-            )
+            incoming_batch = self._context_builder_component.collapse_batch(non_self_chats)
+            prompt_payload = self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch)
+            self._tracer.log_event("llm_prompt_bundle", prompt_payload)
+            self._check_payload_contract(mode="chat", payload=prompt_payload)
+            bundle = await self._llm.generate_bundle(primary_chat, context, overflow_chats, incoming_batch)
             self._log_quality_fallbacks()
-            self._tracer.log_event(
-                "llm_address_result",
-                {"sender": chat.sender_id or chat.sender_name, "addressed": bool(is_addressed)},
+            override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
+                bundle.autonomy_decision,
+                bundle.next_delay_seconds,
             )
-            if is_addressed:
-                addressed = True
-                break
-        if not addressed:
+            if override_decision is not None or override_delay is not None:
+                bundle.autonomy_decision = override_decision
+                bundle.next_delay_seconds = override_delay
+            self._tracer.log_event("llm_response_bundle", self._bundle_response_payload(bundle))
+            self._log_reasoning_trace("bundle", "llm_reasoning_bundle")
+            if bundle.text:
+                self._rolling_buffer.add_ai_message(bundle.text, self._persona)
+                self._memory.add_ai_message(bundle.text, self._persona)
             if overflow:
                 await self._apply_overflow_summary(overflow, overflow_chats, overflow_timestamps)
-            self._enforce_summary_before_recent(reason="not_addressed")
+            overflow_settled = True
+            self._enforce_summary_before_recent(reason="after_response")
+            if self._facts_enabled and self._facts_mode == "per_message":
+                self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
+            self._update_participant_hints(bundle.participant_hints)
+            self._update_mood_and_status(bundle, source="chat")
+            if bundle.actions or bundle.text:
+                self._last_response_ts = time.time()
+            self._tracer.log_event("response", {"actions": len(bundle.actions), "batch": len(chats)})
             self._schedule_episode_check()
-            return []
-
-        incoming_batch = self._context_builder_component.collapse_batch(non_self_chats)
-        prompt_payload = self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch)
-        self._tracer.log_event("llm_prompt_bundle", prompt_payload)
-        self._check_payload_contract(mode="chat", payload=prompt_payload)
-        bundle = await self._llm.generate_bundle(primary_chat, context, overflow_chats, incoming_batch)
-        self._log_quality_fallbacks()
-        override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
-            bundle.autonomy_decision,
-            bundle.next_delay_seconds,
-        )
-        if override_decision is not None or override_delay is not None:
-            bundle.autonomy_decision = override_decision
-            bundle.next_delay_seconds = override_delay
-        self._tracer.log_event("llm_response_bundle", self._bundle_response_payload(bundle))
-        self._log_reasoning_trace("bundle", "llm_reasoning_bundle")
-        if bundle.text:
-            self._rolling_buffer.add_ai_message(bundle.text, self._persona)
-            self._memory.add_ai_message(bundle.text, self._persona)
-        if overflow:
-            await self._apply_overflow_summary(overflow, overflow_chats, overflow_timestamps)
-        self._enforce_summary_before_recent(reason="after_response")
-        if self._facts_enabled and self._facts_mode == "per_message":
-            self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
-        self._update_participant_hints(bundle.participant_hints)
-        self._update_mood_and_status(bundle, source="chat")
-        if bundle.actions or bundle.text:
-            self._last_response_ts = time.time()
-        self._tracer.log_event("response", {"actions": len(bundle.actions), "batch": len(chats)})
-        self._schedule_episode_check()
-        return bundle.actions
+            return bundle.actions
+        finally:
+            if overflow and not overflow_settled:
+                # A failure above (provider error, cancellation, bug) left drained
+                # overflow unowned. Put it back so it is summarized on a later turn
+                # instead of vanishing.
+                logger.warning(
+                    "Chat turn aborted before overflow was summarized; requeueing %d message(s).",
+                    len(overflow),
+                )
+                self._memory.requeue_overflow(overflow)
 
     async def _apply_overflow_summary(
         self,
@@ -727,7 +769,7 @@ class MessagePipeline:
             self._memory.requeue_overflow(overflow)
             return
 
-        self._memory.apply_summary(cleaned, timestamps=overflow_timestamps)
+        self._memory.apply_summary(cleaned, timestamps=overflow_timestamps, items=overflow)
 
     def _build_chat(self, data: Dict[str, Any]) -> InboundChat:
         sender_id_raw = data.get("from_id", data.get("sender_id", ""))
@@ -1537,11 +1579,22 @@ class MessagePipeline:
         summary_end_ts = float(self._memory.summary_meta().get("range_end_ts", 0.0) or 0.0)
         if summary_end_ts <= 0.0:
             return list(overflow)
-        filtered = [
-            item
-            for item in overflow
-            if float(item.timestamp or 0.0) <= 0.0 or float(item.timestamp or 0.0) > summary_end_ts
-        ]
+
+        def is_covered(item: MemoryItem) -> bool:
+            timestamp = float(item.timestamp or 0.0)
+            if timestamp <= 0.0:
+                return False
+            if timestamp > summary_end_ts:
+                return False
+            if timestamp == summary_end_ts:
+                # Ambiguous: the protocol accepts integer unix seconds and batches share
+                # timestamps, so an item exactly at the watermark may be a distinct
+                # message that arrived later. Only drop it if the summary really covers
+                # this specific message.
+                return self._memory.is_summarized(item)
+            return True
+
+        filtered = [item for item in overflow if not is_covered(item)]
         skipped = len(overflow) - len(filtered)
         if skipped > 0:
             logger.info(
@@ -1666,10 +1719,16 @@ class MessagePipeline:
         for message in messages:
             if self._is_ignored_message(message) or self._is_self_message(message):
                 continue
-            timestamp = float(message.timestamp or 0.0)
-            if timestamp > 0.0 and timestamp <= self._facts_cursor_ts:
-                continue
             key = self._fact_message_key(message)
+            timestamp = float(message.timestamp or 0.0)
+            # The cursor is a coarse timestamp watermark. Messages strictly older than it
+            # are genuinely swept; messages exactly at it are ambiguous (integer unix
+            # seconds and batched arrivals share timestamps), so only skip those we can
+            # prove were already swept.
+            if timestamp > 0.0 and timestamp < self._facts_cursor_ts:
+                continue
+            if timestamp > 0.0 and timestamp == self._facts_cursor_ts and key in self._facts_swept_keys:
+                continue
             if key in self._facts_pending_keys:
                 continue
             self._facts_pending_messages.append(message)
@@ -1684,12 +1743,25 @@ class MessagePipeline:
                 continue
             key = self._participant_key(participant.user_id, participant.name)
             self._facts_pending_participants[key] = participant
-        max_pending = max(self._facts_evidence_max_messages * 3, self._facts_evidence_max_messages)
-        if len(self._facts_pending_messages) > max_pending:
-            self._facts_pending_messages = self._facts_pending_messages[-max_pending:]
-            self._facts_pending_keys = {self._fact_message_key(item) for item in self._facts_pending_messages}
-            # Queue was trimmed to recent items; reset age to avoid immediate re-flush loops.
-            self._facts_pending_since_ts = now if self._facts_pending_messages else 0.0
+        # The pending queue is un-swept evidence and its only copy. It is NOT capped:
+        # trimming it kept the newest messages and permanently destroyed the oldest
+        # un-swept evidence during a provider outage. Warn instead so a stuck extractor
+        # is visible.
+        if len(self._facts_pending_messages) > FACTS_PENDING_WARN_THRESHOLD:
+            logger.warning(
+                "Fact evidence queue holds %d un-swept messages. Extraction is not keeping "
+                "up; evidence is retained but check the facts provider and settings.",
+                len(self._facts_pending_messages),
+            )
+
+    def _mark_facts_swept(self, messages: List[InboundChat]) -> None:
+        """Remember exactly which messages were swept, to disambiguate tied timestamps."""
+        for message in messages:
+            self._facts_swept_keys.add(self._fact_message_key(message))
+        if len(self._facts_swept_keys) > FACTS_SWEPT_KEY_LIMIT:
+            excess = len(self._facts_swept_keys) - FACTS_SWEPT_KEY_LIMIT
+            for key in list(self._facts_swept_keys)[:excess]:
+                self._facts_swept_keys.discard(key)
 
     def _fact_message_key(self, message: InboundChat) -> str:
         timestamp = float(message.timestamp or 0.0)
@@ -1784,6 +1856,7 @@ class MessagePipeline:
                 max_ts = float(sweep.get("max_ts", 0.0) or 0.0)
                 if max_ts > self._facts_cursor_ts:
                     self._facts_cursor_ts = max_ts
+                self._mark_facts_swept(chunk)
                 payload = {
                     "mode": self._facts_mode,
                     "flush_reason": flush_reason if chunk_index == 0 else "drain",
@@ -1805,6 +1878,16 @@ class MessagePipeline:
                     payload["reasoning"] = reasoning_trace
                 self._tracer.log_event("facts_sweep", payload)
                 chunk_index += 1
+        except BaseException:
+            # Anything else that escapes (tracer failure, cancellation, bug) would
+            # otherwise destroy the un-processed tail, which is only held by `remaining`.
+            if remaining:
+                logger.exception(
+                    "Fact sweep aborted unexpectedly; requeueing %d un-processed message(s).",
+                    len(remaining),
+                )
+                self._requeue_fact_evidence(remaining, pending_participants)
+            raise
         finally:
             self._facts_task = None
         if self._facts_pending_messages:
@@ -2264,7 +2347,14 @@ class MessagePipeline:
         now = time.time()
         last_activity = max(self._last_inbound_ts, self._last_response_ts)
         inactivity = max(0.0, now - last_activity)
-        new_items = max(0, count - self._last_episode_size)
+        # Count messages that were not part of the last summarized episode by identity.
+        # Length arithmetic (count - last_episode_size) silently under-counts: when the
+        # buffer is at its retention size, arriving messages replace retained overlap
+        # without changing the length, so genuinely new traffic never registered and
+        # episodes stalled forever.
+        new_items = sum(
+            1 for item in items if str(getattr(item, "item_id", "") or "") not in self._episode_covered_ids
+        )
 
         trigger_reason = ""
         if count >= self._episode_max_messages:
@@ -2297,12 +2387,23 @@ class MessagePipeline:
         # Trim by identity, not position: new messages may have arrived while we were
         # awaiting the LLM above, and they were never summarized (bug D).
         retained = self._rolling_buffer.trim_after_episode(snapshot, overlap)
+        self._mark_episode_covered(snapshot)
         self._last_episode_ts = now
         self._last_episode_size = retained
         self._tracer.log_event(
             "episode_summary",
             {"reason": trigger_reason, "messages": count, "overlap": retained},
         )
+
+    def _mark_episode_covered(self, items: List[Any]) -> None:
+        for item in items:
+            item_id = str(getattr(item, "item_id", "") or "")
+            if item_id:
+                self._episode_covered_ids.add(item_id)
+        if len(self._episode_covered_ids) > EPISODE_COVERED_ID_LIMIT:
+            excess = len(self._episode_covered_ids) - EPISODE_COVERED_ID_LIMIT
+            for item_id in list(self._episode_covered_ids)[:excess]:
+                self._episode_covered_ids.discard(item_id)
 
     async def _summarize_episode(self, items: List[Any]) -> str:
         chats: List[InboundChat] = []

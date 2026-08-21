@@ -1528,12 +1528,16 @@ def test_pipeline_filters_overflow_already_covered_by_summary_meta():
     pipeline._memory.add_message(  # type: ignore[attr-defined]
         InboundChat(text="two", sender_id="user-1", sender_name="User", timestamp=11.0, raw={})
     )
-    pipeline._memory._summary = "summary"  # type: ignore[attr-defined]
-    pipeline._memory._summary_meta = {  # type: ignore[attr-defined]
-        "last_updated_ts": 20.0,
-        "range_start_ts": 10.0,
-        "range_end_ts": 10.0,
-    }
+    # Mark "one" as genuinely covered by the summary. Coverage is recorded per message,
+    # not by timestamp alone: an item sitting exactly on range_end_ts may be a distinct
+    # message that arrived later (batches and integer unix seconds share timestamps).
+    covered = [
+        item
+        for item in pipeline._memory._overflow  # type: ignore[attr-defined]
+        if item.text == "one"
+    ]
+    pipeline._memory.apply_summary("summary", [10.0], items=covered)  # type: ignore[attr-defined]
+    pipeline._memory._summary_meta["last_updated_ts"] = 20.0  # type: ignore[attr-defined]
 
     asyncio.run(pipeline.process_chat({"text": "three", "from_name": "User", "from_id": "user-1", "timestamp": 12.0}))
     asyncio.run(pipeline.process_chat({"text": "four", "from_name": "User", "from_id": "user-1", "timestamp": 13.0}))

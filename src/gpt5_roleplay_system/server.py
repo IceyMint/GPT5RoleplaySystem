@@ -26,6 +26,30 @@ from .time_utils import format_pacific_time, get_pacific_timestamp
 logger = logging.getLogger("gpt5_roleplay_server")
 
 
+def _format_idle_duration(seconds: float) -> str:
+    """Render idle time with only the units useful at its current scale.
+
+    * below one minute: seconds;
+    * below one hour: minutes plus any non-zero seconds;
+    * at least one hour: hours plus any non-zero minutes (seconds would only make
+      the status line flicker while conveying no useful information).
+    """
+    total_seconds = max(0, int(float(seconds or 0.0)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    if hours:
+        parts = [f"{hours} hr"]
+        if minutes:
+            parts.append(f"{minutes} min")
+        return " ".join(parts)
+    if minutes:
+        parts = [f"{minutes} min"]
+        if remaining_seconds:
+            parts.append(f"{remaining_seconds} sec")
+        return " ".join(parts)
+    return f"{remaining_seconds} sec"
+
+
 class StatusChannelErrorHandler(logging.Handler):
     """Broadcast ERROR logs to the configured status chat channel."""
 
@@ -475,12 +499,12 @@ async def _status_loop(session: ClientSession, autonomy: AutonomyConfig) -> None
         try:
             await session.send_status(payload)
             if autonomy.status_channel is not None:
-                seconds = float(payload["seconds_since_activity"])
+                idle_duration = _format_idle_duration(float(payload["seconds_since_activity"]))
                 status_text = (
                     f"[Status]\n"
                     f"Mood: {payload['mood']}\n"
                     f"Status: {payload['status']}\n"
-                    f"Idle: {seconds:.0f}s"
+                    f"Idle: {idle_duration}"
                 )
                 action = Action(
                     command_type=CommandType.CHAT,
