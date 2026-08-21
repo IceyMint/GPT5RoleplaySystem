@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import logging
+import math
 import time
 import unicodedata
 from typing import Any, Dict, List, Protocol, Set
@@ -2257,7 +2258,7 @@ class MessagePipeline:
             delay = float(value)
         except (TypeError, ValueError):
             return None
-        if delay <= 0.0:
+        if not math.isfinite(delay) or delay <= 0.0:
             return None
         return delay
 

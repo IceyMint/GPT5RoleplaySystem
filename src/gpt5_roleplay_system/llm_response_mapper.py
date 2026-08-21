@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .models import Action, CommandType
@@ -191,6 +192,6 @@ class ResponseMapper:
             candidate = float(value)
         except (TypeError, ValueError):
             return None
-        if candidate <= 0.0:
+        if not math.isfinite(candidate) or candidate <= 0.0:
             return None
         return candidate
