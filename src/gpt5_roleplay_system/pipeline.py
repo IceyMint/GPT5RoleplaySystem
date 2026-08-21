@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import logging
+import math
 import time
 import unicodedata
 from typing import Any, Dict, List, Protocol, Set
@@ -561,7 +562,8 @@ class MessagePipeline:
                 avg_ms = sum(history) / count
                 min_ms = history[0]
                 max_ms = history[-1]
-                p95_ms = history[int(count * 0.95)] if count > 1 else max_ms
+                idx = max(0, int(math.ceil(count * 0.95)) - 1)
+                p95_ms = history[idx] if count > 1 else max_ms
                 self._tracer.log_event("perf_summary", {
                     "count": count,
                     "avg_ms": avg_ms,
@@ -576,93 +578,127 @@ class MessagePipeline:
         return await self.process_chat_batch([data])
 
     async def process_chat_batch(self, batch: List[Dict[str, Any]]) -> List[Any]:
-        start_ts = time.time()
-        chats = [self._context_builder_component.build_chat(item) for item in batch]
-        non_self_chats: List[InboundChat] = []
-        for chat in chats:
-            if self._is_ignored_message(chat):
-                continue
-            if self._is_self_message(chat):
-                self._handle_self_message(chat)
-            else:
-                non_self_chats.append(chat)
+        start_ts = time.perf_counter()
+        actions_count = 0
+        chat_output_enabled = self._llm_chat_enabled
+        try:
+            chats = [self._context_builder_component.build_chat(item) for item in batch]
+            non_self_chats: List[InboundChat] = []
+            for chat in chats:
+                if self._is_ignored_message(chat):
+                    continue
+                if self._is_self_message(chat):
+                    self._handle_self_message(chat)
+                else:
+                    non_self_chats.append(chat)
 
-        if not non_self_chats:
-            self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=0, chat_output_enabled=self._llm_chat_enabled)
-            return []
+            if not non_self_chats:
+                return []
 
-        self._last_inbound_ts = time.time()
+            self._last_inbound_ts = time.time()
 
-        seed_participants = self._context_builder_component.merge_participants(non_self_chats)
-        participants = self._normalize_participants(seed_participants)
-        if not self._llm_chat_enabled:
-            # Low-cost ingest mode: store chat into memory/experience buffers without running
-            # addressed-to-me classification or bundle/state generation.
+            seed_participants = self._context_builder_component.merge_participants(non_self_chats)
+            participants = self._normalize_participants(seed_participants)
+            if not self._llm_chat_enabled:
+                chat_output_enabled = False
+                # Low-cost ingest mode: store chat into memory/experience buffers without running
+                # addressed-to-me classification or bundle/state generation.
+                for chat in non_self_chats:
+                    self._rolling_buffer.add_user_message(chat)
+                    self._memory.add_message(chat)
+                self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, [], participants)
+                # Ensure deferred compression doesn't accumulate unbounded while silent.
+                self._memory.compress_overflow()
+                self._enforce_summary_before_recent(reason="chat_disabled")
+                self._schedule_episode_check()
+                return []
+
+            overflow = self._filter_overflow_against_summary(self._memory.drain_overflow())
+            overflow_chats = self._memory_items_to_chats(overflow)
+            overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
+            recent_chats = self._memory_items_to_chats(self._memory.recent())
+            participants = self._normalize_participants(
+                self._participants_from_messages(
+                    recent_chats + overflow_chats + non_self_chats,
+                    participants,
+                )
+            )
+
+            primary_chat = self._select_primary_incoming_chat(non_self_chats)
+            context = await self._context_builder_component.build_context(
+                primary_chat,
+                participants,
+                agent_state=self._agent_state(),
+            )
+
+            # Add messages to history AFTER building context to avoid duplication
+            # of the current message in 'recent_messages' vs 'incoming'.
             for chat in non_self_chats:
                 self._rolling_buffer.add_user_message(chat)
                 self._memory.add_message(chat)
-            self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, [], participants)
-            # Ensure deferred compression doesn't accumulate unbounded while silent.
-            self._memory.compress_overflow()
-            self._enforce_summary_before_recent(reason="chat_disabled")
-            self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=0, chat_output_enabled=False)
-            self._schedule_episode_check()
-            return []
 
-        overflow = self._filter_overflow_against_summary(self._memory.drain_overflow())
-        overflow_chats = self._memory_items_to_chats(overflow)
-        overflow_timestamps = [float(item.timestamp or 0.0) for item in overflow]
-        recent_chats = self._memory_items_to_chats(self._memory.recent())
-        participants = self._normalize_participants(
-            self._participants_from_messages(
-                recent_chats + overflow_chats + non_self_chats,
-                participants,
-            )
-        )
+            self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, overflow_chats, participants)
 
-        primary_chat = self._select_primary_incoming_chat(non_self_chats)
-        context = await self._context_builder_component.build_context(
-            primary_chat,
-            participants,
-            agent_state=self._agent_state(),
-        )
+            addressed = False
+            for chat in non_self_chats:
+                self._tracer.log_event(
+                    "llm_address_check",
+                    {
+                        "sender": chat.sender_id or chat.sender_name,
+                        "text": chat.text,
+                        "persona": self._persona,
+                        "participants": [(p.user_id or p.name) for p in participants[:10]],
+                        "location": self._environment.location,
+                    },
+                )
+                is_addressed = await self._llm.is_addressed_to_me(
+                    chat,
+                    self._persona,
+                    self._environment,
+                    participants,
+                    context,
+                )
+                self._log_quality_fallbacks()
+                self._tracer.log_event(
+                    "llm_address_result",
+                    {"sender": chat.sender_id or chat.sender_name, "addressed": bool(is_addressed)},
+                )
+                if is_addressed:
+                    addressed = True
+                    break
+            if not addressed:
+                if overflow:
+                    if self._summary_strategy == "llm":
+                        summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
+                        self._log_quality_fallbacks()
+                        if summary_text:
+                            self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
+                        else:
+                            self._memory.requeue_overflow(overflow)
+                    else:
+                        self._memory.compress_overflow(overflow)
+                self._enforce_summary_before_recent(reason="not_addressed")
+                self._schedule_episode_check()
+                return []
 
-        # Add messages to history AFTER building context to avoid duplication
-        # of the current message in 'recent_messages' vs 'incoming'.
-        for chat in non_self_chats:
-            self._rolling_buffer.add_user_message(chat)
-            self._memory.add_message(chat)
-
-        self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, overflow_chats, participants)
-
-        addressed = False
-        for chat in non_self_chats:
-            self._tracer.log_event(
-                "llm_address_check",
-                {
-                    "sender": chat.sender_id or chat.sender_name,
-                    "text": chat.text,
-                    "persona": self._persona,
-                    "participants": [(p.user_id or p.name) for p in participants[:10]],
-                    "location": self._environment.location,
-                },
-            )
-            is_addressed = await self._llm.is_addressed_to_me(
-                chat,
-                self._persona,
-                self._environment,
-                participants,
-                context,
-            )
+            incoming_batch = self._context_builder_component.collapse_batch(non_self_chats)
+            prompt_payload = self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch)
+            self._tracer.log_event("llm_prompt_bundle", prompt_payload)
+            self._check_payload_contract(mode="chat", payload=prompt_payload)
+            bundle = await self._llm.generate_bundle(primary_chat, context, overflow_chats, incoming_batch)
             self._log_quality_fallbacks()
-            self._tracer.log_event(
-                "llm_address_result",
-                {"sender": chat.sender_id or chat.sender_name, "addressed": bool(is_addressed)},
+            override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
+                bundle.autonomy_decision,
+                bundle.next_delay_seconds,
             )
-            if is_addressed:
-                addressed = True
-                break
-        if not addressed:
+            if override_decision is not None or override_delay is not None:
+                bundle.autonomy_decision = override_decision
+                bundle.next_delay_seconds = override_delay
+            self._tracer.log_event("llm_response_bundle", self._bundle_response_payload(bundle))
+            self._log_reasoning_trace("bundle", "llm_reasoning_bundle")
+            if bundle.text:
+                self._rolling_buffer.add_ai_message(bundle.text, self._persona)
+                self._memory.add_ai_message(bundle.text, self._persona)
             if overflow:
                 if self._summary_strategy == "llm":
                     summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
@@ -673,49 +709,25 @@ class MessagePipeline:
                         self._memory.requeue_overflow(overflow)
                 else:
                     self._memory.compress_overflow(overflow)
-            self._enforce_summary_before_recent(reason="not_addressed")
-            self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=0, chat_output_enabled=True)
+            self._enforce_summary_before_recent(reason="after_response")
+            if self._facts_enabled and self._facts_mode == "per_message":
+                self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
+            self._update_participant_hints(bundle.participant_hints)
+            self._update_mood_and_status(bundle, source="chat")
+            if bundle.actions or bundle.text:
+                self._last_response_ts = time.time()
             self._schedule_episode_check()
-            return []
+            actions_count = len(bundle.actions)
 
-        incoming_batch = self._context_builder_component.collapse_batch(non_self_chats)
-        prompt_payload = self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch)
-        self._tracer.log_event("llm_prompt_bundle", prompt_payload)
-        self._check_payload_contract(mode="chat", payload=prompt_payload)
-        bundle = await self._llm.generate_bundle(primary_chat, context, overflow_chats, incoming_batch)
-        self._log_quality_fallbacks()
-        override_decision, override_delay = self._apply_autonomy_scheduler_override_from_incoming(
-            bundle.autonomy_decision,
-            bundle.next_delay_seconds,
-        )
-        if override_decision is not None or override_delay is not None:
-            bundle.autonomy_decision = override_decision
-            bundle.next_delay_seconds = override_delay
-        self._tracer.log_event("llm_response_bundle", self._bundle_response_payload(bundle))
-        self._log_reasoning_trace("bundle", "llm_reasoning_bundle")
-        if bundle.text:
-            self._rolling_buffer.add_ai_message(bundle.text, self._persona)
-            self._memory.add_ai_message(bundle.text, self._persona)
-        if overflow:
-            if self._summary_strategy == "llm":
-                summary_text = await self._llm.summarize_overflow(self._memory.summary(), overflow_chats)
-                self._log_quality_fallbacks()
-                if summary_text:
-                    self._memory.apply_summary(summary_text, timestamps=overflow_timestamps)
-                else:
-                    self._memory.requeue_overflow(overflow)
-            else:
-                self._memory.compress_overflow(overflow)
-        self._enforce_summary_before_recent(reason="after_response")
-        if self._facts_enabled and self._facts_mode == "per_message":
-            self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
-        self._update_participant_hints(bundle.participant_hints)
-        self._update_mood_and_status(bundle, source="chat")
-        if bundle.actions or bundle.text:
-            self._last_response_ts = time.time()
-        self._record_latency((time.time() - start_ts) * 1000.0, len(chats), actions=len(bundle.actions), chat_output_enabled=True)
-        self._schedule_episode_check()
-        return bundle.actions
+            return bundle.actions
+        finally:
+            latency_ms = (time.perf_counter() - start_ts) * 1000.0
+            self._record_latency(
+                latency_ms,
+                batch_size=len(batch),
+                actions=actions_count,
+                chat_output_enabled=chat_output_enabled
+            )
 
     def _build_chat(self, data: Dict[str, Any]) -> InboundChat:
         sender_id_raw = data.get("from_id", data.get("sender_id", ""))

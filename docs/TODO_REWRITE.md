@@ -21,5 +21,5 @@ Top-risk items first. Check off as completed.
 
 ## P4 — Observability & testing
 - [x] **LLM prompt/response logging.** Capture structured inputs/outputs for debugging (no secrets).
-- [x] **Perf metrics.** Add per-message latency metrics and periodic summaries.
+- [ ] **Perf metrics.** Add per-message latency metrics and periodic summaries.
 - [ ] **Scenario tests.** Add tests for self‑chat filtering, multi‑message batching, and participant extraction.
