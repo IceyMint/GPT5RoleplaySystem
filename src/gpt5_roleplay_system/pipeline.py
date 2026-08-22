@@ -1976,16 +1976,26 @@ class MessagePipeline:
             name_key = self._normalize_name_for_match(participant.name)
             if name_key:
                 alias_to_id[name_key] = participant.user_id
-        fact_strings_stored = 0
-        people_updated = 0
+        # Pre-resolve user IDs for each fact to do a bulk fetch
+        resolved_user_ids = []
+        unique_user_ids = set()
         for fact in facts:
             user_id = fact.user_id
             if not user_id and fact.name:
                 key = self._normalize_name_for_match(fact.name)
                 user_id = alias_to_id.get(key, "") if key else ""
+            resolved_user_ids.append(user_id)
+            if user_id:
+                unique_user_ids.add(user_id)
+
+        people = self._knowledge_store.fetch_people(list(unique_user_ids)) if unique_user_ids else {}
+
+        fact_strings_stored = 0
+        people_updated = 0
+        for fact, user_id in zip(facts, resolved_user_ids):
             if not user_id:
                 continue
-            profile = self._knowledge_store.fetch_people([user_id]).get(user_id)
+            profile = people.get(user_id)
             existing_list = list(profile.facts) if profile else []
             existing_keys = {self._normalize_fact_key(item) for item in existing_list if self._normalize_fact_key(item)}
             existing_tokens = [self._fact_tokens(item) for item in existing_list]
