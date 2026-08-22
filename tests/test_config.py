@@ -1,9 +1,28 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import yaml
 
 from gpt5_roleplay_system.config import load_config
 from gpt5_roleplay_system.config_loader import ConfigLoader
+
+
+def test_relative_episode_state_dir_is_resolved_from_config_file(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    config_path = project / "config.yaml"
+    config_path.write_text(
+        "episode:\n  persist_state: true\n  state_dir: .episode_state\n",
+        encoding="utf-8",
+    )
+    unrelated_cwd = tmp_path / "somewhere-else"
+    unrelated_cwd.mkdir()
+    monkeypatch.chdir(unrelated_cwd)
+
+    config = ConfigLoader().load(str(config_path))
+
+    assert Path(config.episode.state_dir) == project / ".episode_state"
 
 
 def test_load_config_separates_embedding_key_from_neo4j_genai_key(tmp_path, monkeypatch):

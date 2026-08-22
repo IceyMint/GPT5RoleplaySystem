@@ -55,6 +55,15 @@ class ConfigLoader:
         knowledge_config = self.load_knowledge_config(raw)
         facts_config = self.load_facts_config(raw)
         episode_config = self.load_episode_config(raw)
+        state_dir = Path(episode_config.state_dir).expanduser()
+        if not state_dir.is_absolute():
+            # Persistence belongs to the configuration/project, not to whichever
+            # directory happened to be current when the server was launched. When
+            # running entirely from defaults (no config file), cwd remains the only
+            # available project anchor.
+            base_dir = config_path.expanduser().resolve().parent if config_path is not None else Path.cwd()
+            state_dir = base_dir / state_dir
+        episode_config.state_dir = str(state_dir)
         autonomy_config = self.load_autonomy_config(raw)
         neo4j_config = self.load_neo4j_config(raw)
 
