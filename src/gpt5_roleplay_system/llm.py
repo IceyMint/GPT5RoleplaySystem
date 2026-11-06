@@ -27,9 +27,6 @@ except ImportError:  # pragma: no cover - optional dependency
 from .models import Action, CommandType, ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 from .name_utils import split_display_and_username
 from .llm_prompts import PromptManager
-from .llm_response_mapper import ResponseMapper
-from .llm_structured_parser import StructuredParser
-from .llm_transport import OpenRouterTransport
 
 logger = logging.getLogger("gpt5_roleplay_llm")
 _UUID_LIKE_RE = re.compile(
@@ -714,16 +711,6 @@ class OpenRouterLLMClient(LLMClient):
         self._quality_fallback_warned_keys: set[str] = set()
         self._quality_fallback_lock = threading.Lock()
         self._prompt_manager = PromptManager()
-        self._structured_parser = StructuredParser()
-        self._transport = OpenRouterTransport(
-            client=self._client,
-            reasoning=self._reasoning,
-            provider_order=self._provider_order,
-            provider_allow_fallbacks=self._provider_allow_fallbacks,
-            facts_provider_order=self._facts_provider_order,
-            facts_provider_allow_fallbacks=self._facts_provider_allow_fallbacks,
-        )
-        self._response_mapper = ResponseMapper()
 
     def _prompt_manager_instance(self) -> PromptManager:
         prompt_manager = getattr(self, "_prompt_manager", None)
