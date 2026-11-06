@@ -232,8 +232,12 @@ ChatGPT cross-check:
 - config.py module-level helpers `_resolve_default_config_path`, `_load_yaml`,
   `_env_bool`, `_parse_optional_bool`, `_pick_model`: nothing imports them;
   `ConfigLoader` carries its own copies. (config.py's `load_config` is live.)
-- `OpenRouterLLMClient._request_text` (llm.py:1441): defined, never called;
-  all callers use `_request_text_with_model`.
+- `OpenRouterLLMClient._request_text` (llm.py:1441): **NOT dead — correction
+  (ChatGPT cross-check, 2026-11-06).** It has no callers inside the server,
+  but `scripts/deduplicate_facts.py` calls it at two sites (lines 42, 63) via
+  `asyncio.to_thread`. Deleting it requires migrating that script to
+  `_request_text_with_model` first. (Muse's original claim was wrong: the
+  verification grep was scoped to src/tests and missed scripts/.)
 - llm.py's private copies of PromptManager helpers (`_serialize_payload`,
   `_canonicalize_for_prompt`, `_stable_participants_payload`,
   `_entity_prompt_payload`, `_stable_entity_list`, `_chat_payload`,
@@ -242,6 +246,19 @@ ChatGPT cross-check:
   `_name_mentioned_in_text`, `_normalize_name`, `_name_in_text`): the live
   prompt paths delegate to PromptManager's copies; per-function liveness is in
   the appendix table (refs column) — several are kept alive only by tests.
+  **Scoped-grep resolution (2026-11-06, after the ChatGPT cross-check flagged
+  them):** within llm.py, `_serialize_payload`, `_stable_participants_payload`,
+  `_chat_payload` have no call sites at all; `_canonicalize_for_prompt`,
+  `_entity_prompt_payload`, `_stable_entity_list`, `_participant_payload` are
+  referenced only inside that same uncalled cluster; `_filter_facts_entities`
+  is never called, and its exclusive helpers (`_minimal_people_fact_profile`,
+  `_profile_mentioned_in_text`, the `_name_mentioned_in_text` classmethod) are
+  reachable only through it. That whole cluster is DEAD in llm.py. The
+  module-level `_normalize_name` / `_name_in_text` functions are LIVE
+  (RuleBasedLLMClient.is_addressed_to_me).
+- `FactManager.wait_for_idle` and `EpisodeManager.wait_for_idle`: no callers
+  (name-count hits were each other's definitions).
+- `ContextBuilder.snapshot_state`: no callers; pipeline serializes its own state.
 
 ### 5.4 Test-only production functions
 - `background.drain_background_tasks`, `background.pending_background_tasks`
@@ -297,7 +314,8 @@ and OpenRouterLLMClient records quality-fallback events with warnings):
    one is an intentional product choice, recorded here so it is a decision,
    not an accident.
 
-## 8. Test map (20 files, 7,620 lines, 218 tests per STATE_OF_PLAY)
+## 8. Test map (20 files, 7,620 lines, 255 tests — verified by running
+`pytest` on this commit, 2026-11-06: 255 passed. STATE_OF_PLAY's "218" is stale.)
 
 - Tests construct **real production objects** (MessagePipeline, SessionController,
   ConversationMemory, OpenRouterLLMClient) with test doubles for the LLM
@@ -353,6 +371,38 @@ and OpenRouterLLMClient records quality-fallback events with warnings):
 - `_facts_deduplication_loop` (server, dead) vs `FactsDeduplicationService.run_forever` (live).
 - `normalize_display_name` (name_utils) vs `_normalize_name` (llm/llm_prompts) — different normalization rules under near-identical names.
 - `ExperienceStore` (memory.py, in-memory list) vs Neo4j Experience nodes — same word, different stores; persistence happens via the vector index, not the store class.
+
+## 11. Cross-check record (ChatGPT, 2026-11-06)
+
+The map's 22 load-bearing claims were sent to ChatGPT for adversarial review
+against GitHub main @ dd2a9e5 ("Repository Claim Review" thread). Verdict:
+**21 CONFIRMED, 1 WRONG, 0 UNSURE.** Disposition: accept the map as the cleanup
+baseline with the corrections in this section applied (already folded into
+§5.3 and §8 above).
+
+- **Claim 15 was WRONG** (the `_request_text` correction in §5.3). Lesson
+  recorded: dead-code claims must be grepped across src + tests + **scripts**;
+  a method with no server callers can still have a standalone-script caller.
+- **Claim 18 qualification:** the discarded repair is worse than it looks —
+  `normalize_and_validate_payload` works on a `copy.deepcopy`, and the LLM
+  client builds its actual prompt independently of the checked payload, so the
+  contract check is *observational, not an enforcing boundary*. Rewiring the
+  return value alone would not deliver repaired data to the model; enforcement
+  is a design decision for the cleanup, not a one-line fix.
+- **Claim 19 qualification:** the Neo4j try/except blocks sit inside
+  `with self._session()` blocks; session entry/exit errors are not necessarily
+  suppressed. The silently swallowed query and index-creation exceptions are
+  confirmed as stated.
+- **ChatGPT's additional candidates**, all verified by Muse with scoped
+  greps and folded into §5.3: the dead llm.py formatting cluster,
+  `FactManager.wait_for_idle`, `ContextBuilder.snapshot_state`.
+- **ChatGPT's recommended cleanup order** (adopted as the sequencing input for
+  the cleanup plan): (1) runtime defects first — non-finite delay handling,
+  the payload-contract enforcement decision, logging for suppressed Neo4j
+  failures; (2) resolve ownership to one authoritative implementation per
+  behavior, with behavioral tests pointed at it; (3) delete proven dead code;
+  (4) protect external entry points — include `scripts/deduplicate_facts.py`
+  in regression checks.
 
 ---
 
