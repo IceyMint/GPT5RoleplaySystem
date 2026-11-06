@@ -23,11 +23,7 @@ from .memory import (
 )
 from .models import Action, CommandType, ConversationContext, EnvironmentSnapshot, InboundChat, Participant
 from .time_utils import format_pacific_time
-from .autonomy_manager import AutonomyManager
 from .background import spawn_supervised
-from .context_builder import ContextBuilder
-from .episode_manager import EpisodeManager
-from .fact_manager import FactManager
 from .pipeline_state import PipelineRuntimeState
 from .name_utils import (
     extract_display_name,
@@ -202,46 +198,6 @@ class MessagePipeline:
         self._runtime_state.posture_is_sitting = self._environment.is_sitting
         self._runtime_state.participant_hints = self._participant_hints
         self._runtime_state.display_names_by_id = self._display_names_by_id
-        self._autonomy_manager_component = AutonomyManager(self._runtime_state)
-        self._context_builder_component = ContextBuilder(
-            state=self._runtime_state,
-            knowledge_store=self._knowledge_store,
-            memory=self._memory,
-            experience_store=self._experience_store,
-            tracer=self._tracer,
-            experience_vector_index=self._experience_vector_index,
-            experience_top_k=self._experience_top_k,
-            experience_score_min=self._experience_score_min,
-            experience_score_delta=self._experience_score_delta,
-            near_duplicate_collapse_enabled=self._near_duplicate_collapse_enabled,
-            near_duplicate_similarity=self._near_duplicate_similarity,
-            routine_summary_enabled=self._routine_summary_enabled,
-            routine_summary_limit=self._routine_summary_limit,
-            routine_summary_min_count=self._routine_summary_min_count,
-            max_environment_participants=self._max_environment_participants,
-            persona_profiles=self._persona_profiles,
-            owner=self,
-        )
-        self._fact_manager_component = FactManager(
-            state=self._runtime_state,
-            llm=self._llm,
-            knowledge_store=self._knowledge_store,
-            tracer=self._tracer,
-            facts_config=facts,
-            context_builder=self._context_builder_component,
-            autonomy_manager=self._autonomy_manager_component,
-            owner=self,
-        )
-        self._episode_manager_component = EpisodeManager(
-            state=self._runtime_state,
-            llm=self._llm,
-            rolling_buffer=self._rolling_buffer,
-            experience_store=self._experience_store,
-            tracer=self._tracer,
-            episode_config=episode,
-            experience_vector_index=self._experience_vector_index,
-            compressor=self._episode_compressor,
-        )
 
     def snapshot_state(self) -> Dict[str, Any]:
         return {
@@ -557,7 +513,6 @@ class MessagePipeline:
         if not key or not value:
             return
         self._persona_profiles[key] = value
-        self._context_builder_component.upsert_persona_profile(persona, value)
 
     def set_user_id(self, user_id: str) -> None:
         self._user_id = user_id
@@ -578,7 +533,7 @@ class MessagePipeline:
         return await self.process_chat_batch([data])
 
     async def process_chat_batch(self, batch: List[Dict[str, Any]]) -> List[Any]:
-        chats = [self._context_builder_component.build_chat(item) for item in batch]
+        chats = [self._build_chat(item) for item in batch]
         non_self_chats: List[InboundChat] = []
         for chat in chats:
             if self._is_ignored_message(chat):
@@ -593,7 +548,7 @@ class MessagePipeline:
 
         self._last_inbound_ts = time.time()
 
-        seed_participants = self._context_builder_component.merge_participants(non_self_chats)
+        seed_participants = self._merge_participants(non_self_chats)
         participants = self._normalize_participants(seed_participants)
         if not self._llm_chat_enabled:
             # Low-cost ingest mode: store chat into memory/experience buffers without running
@@ -601,7 +556,7 @@ class MessagePipeline:
             for chat in non_self_chats:
                 self._rolling_buffer.add_user_message(chat)
                 self._memory.add_message(chat)
-            self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, [], participants)
+            self._maybe_schedule_fact_sweep(non_self_chats, [], participants)
             # NOTE: with the production compressor (SimpleMemoryCompressor) this call is
             # a no-op -- it was made a deliberate no-op in a16995d to stop naive summaries
             # poisoning the context. It is kept because compress_overflow() requeues items
@@ -632,10 +587,9 @@ class MessagePipeline:
             )
 
             primary_chat = self._select_primary_incoming_chat(non_self_chats)
-            context = await self._context_builder_component.build_context(
+            context = await self._build_context(
                 primary_chat,
                 participants,
-                agent_state=self._agent_state(),
             )
 
             # Add messages to history AFTER building context to avoid duplication
@@ -644,7 +598,7 @@ class MessagePipeline:
                 self._rolling_buffer.add_user_message(chat)
                 self._memory.add_message(chat)
 
-            self._fact_manager_component.maybe_schedule_periodic_sweep(non_self_chats, overflow_chats, participants)
+            self._maybe_schedule_fact_sweep(non_self_chats, overflow_chats, participants)
 
             addressed = False
             for chat in non_self_chats:
@@ -681,7 +635,7 @@ class MessagePipeline:
                 self._schedule_episode_check()
                 return []
 
-            incoming_batch = self._context_builder_component.collapse_batch(non_self_chats)
+            incoming_batch = self._collapse_batch(non_self_chats)
             prompt_payload = self._bundle_prompt_payload(primary_chat, context, overflow_chats, incoming_batch)
             self._tracer.log_event("llm_prompt_bundle", prompt_payload)
             self._check_payload_contract(mode="chat", payload=prompt_payload)
@@ -704,7 +658,7 @@ class MessagePipeline:
             overflow_settled = True
             self._enforce_summary_before_recent(reason="after_response")
             if self._facts_enabled and self._facts_mode == "per_message":
-                self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
+                self._schedule_store_facts(bundle.facts, participants)
             self._update_participant_hints(bundle.participant_hints)
             self._update_mood_and_status(bundle, source="chat")
             if bundle.actions or bundle.text:
@@ -2217,13 +2171,12 @@ class MessagePipeline:
         activity = self.activity_snapshot(recent_activity_window_seconds)
         if activity["seconds_since_activity"] < recent_activity_window_seconds:
             return []
-        participants = self._context_builder_component.participants_for_autonomy()
+        participants = self._participants_for_autonomy()
         query_text = self._autonomy_query_text()
-        context = await self._context_builder_component.build_context(
+        context = await self._build_context(
             None,
             participants,
             query_text=query_text,
-            agent_state=self._agent_state(),
         )
         prompt_payload = self._bundle_prompt_payload(None, context, None, None, activity=activity, mode="autonomous")
         self._tracer.log_event("llm_prompt_autonomy", prompt_payload)
@@ -2246,7 +2199,7 @@ class MessagePipeline:
         if bundle.actions or chat_texts:
             self._last_response_ts = time.time()
         if self._facts_enabled and self._facts_mode == "per_message":
-            self._fact_manager_component.schedule_store_facts(bundle.facts, participants)
+            self._schedule_store_facts(bundle.facts, participants)
         self._update_participant_hints(bundle.participant_hints)
         self._update_mood_and_status(bundle, source="autonomy")
         self._schedule_episode_check()
