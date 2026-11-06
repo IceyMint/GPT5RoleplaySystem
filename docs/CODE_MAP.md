@@ -7,6 +7,24 @@ Reference counts are machine-extracted (Python AST inventory + name search acros
 `src/`, `tests/`, `scripts/`); the raw machine index is `docs/code_map_index.json`.
 Classifications were assigned from the firsthand read, not from the counts alone.
 
+> **CLEANUP OUTCOME (2026-11-06, same branch, commits 4b3c908..a985dee; suite
+> 256 passed after every step):** this map describes the code as mapped, BEFORE
+> cleanup. What changed: (1) runtime defects fixed — the live
+> `_optional_positive_float` now rejects inf/NaN; the Neo4j vector index logs
+> its failures instead of swallowing them. (2) Deleted as proven dead:
+> `config_validation.py`, `llm_transport.py`, `llm_structured_parser.py`,
+> `llm_response_mapper.py`, server.py's dead dedupe wrappers, config.py's five
+> dead helpers, pipeline's `_state_update_payload`/`_looks_like_uuid`, llm.py's
+> shadowed duplicate method and its dead prompt-formatting cluster,
+> `SimpleSimilaritySearch`. (3) **De-facaded:** `context_builder.py`,
+> `fact_manager.py`, `episode_manager.py`, `autonomy_manager.py` are GONE —
+> MessagePipeline now calls its own implementations directly; episodic memory
+> and autonomy live in pipeline.py, where they always actually ran. Source went
+> 13,474 → 10,778 lines. Tests that certified decoys were re-pointed at the
+> live paths. **Still open (decisions, not oversights):** whether the payload
+> contract check should *enforce* repairs (today it only observes — §7); the
+> §9 large-function splits were deliberately NOT done in this pass.
+
 ## How to read this map
 
 | Tag | Meaning |
