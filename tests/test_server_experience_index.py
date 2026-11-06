@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gpt5_roleplay_system.server as server_module
+from gpt5_roleplay_system.deduplication import ExperienceDedupePlanner
 from gpt5_roleplay_system.config import ServerConfig
 
 
@@ -115,7 +116,7 @@ def test_build_experience_dedupe_plans_merges_high_similarity_close_time_pairs()
         },
     ]
 
-    plans, qualifying_pairs = server_module._build_experience_dedupe_plans(
+    plans, qualifying_pairs = ExperienceDedupePlanner.build_plans(
         rows,
         similarity_threshold=0.995,
         max_gap_seconds=3600.0,
@@ -146,7 +147,7 @@ def test_build_experience_dedupe_plans_skips_far_apart_pairs():
         },
     ]
 
-    plans, qualifying_pairs = server_module._build_experience_dedupe_plans(
+    plans, qualifying_pairs = ExperienceDedupePlanner.build_plans(
         rows,
         similarity_threshold=0.995,
         max_gap_seconds=3600.0,

@@ -11,7 +11,6 @@ from .background import spawn_supervised
 from .background_tasks import ExperienceDeduplicationService, FactsDeduplicationService
 from .config import AutonomyConfig, ServerConfig, load_config
 from .controller import SessionController
-from .deduplication import ExperienceDedupePlanner, parse_deduped_facts_response
 from .experience_vector import ExperienceVectorIndex, NullEmbeddingClient, OpenAIEmbeddingClient
 from .llm import OpenRouterLLMClient, RuleBasedLLMClient, log_prompt_cache_summary
 from .models import Action, CommandType
@@ -515,39 +514,6 @@ async def _status_loop(session: ClientSession, autonomy: AutonomyConfig) -> None
         except ConnectionError:
             return
         await asyncio.sleep(interval)
-
-
-def _parse_deduped_facts_response(response_text: str) -> list[str]:
-    return parse_deduped_facts_response(response_text)
-
-
-async def _facts_deduplication_loop(config: ServerConfig, knowledge_store: KnowledgeStore, llm_client) -> None:
-    if not isinstance(llm_client, OpenRouterLLMClient):
-        return
-    if not isinstance(knowledge_store, Neo4jKnowledgeStore):
-        return
-    service = FactsDeduplicationService(config, knowledge_store, llm_client)
-    await service.run_forever()
-
-
-def _build_experience_dedupe_plans(
-    rows: List[Any],
-    similarity_threshold: float,
-    max_gap_seconds: float,
-) -> tuple[List[Dict[str, Any]], int]:
-    normalized_rows = [dict(row) for row in rows]
-    return ExperienceDedupePlanner.build_plans(
-        normalized_rows,
-        similarity_threshold=similarity_threshold,
-        max_gap_seconds=max_gap_seconds,
-    )
-
-
-async def _experience_deduplication_loop(config: ServerConfig, knowledge_store: KnowledgeStore) -> None:
-    if not isinstance(knowledge_store, Neo4jKnowledgeStore):
-        return
-    service = ExperienceDeduplicationService(config, knowledge_store)
-    await service.run_forever()
 
 
 async def _cancel_task(task: asyncio.Task | None, *, session_id: str, label: str) -> None:

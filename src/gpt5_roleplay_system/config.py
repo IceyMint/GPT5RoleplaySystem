@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import yaml
 
 
 @dataclass
@@ -145,70 +141,6 @@ class ServerConfig:
     max_environment_participants: int = 10
     posture_stale_seconds: float = 6.0
     persona_profiles: Dict[str, str] = field(default_factory=dict)
-
-
-def _resolve_default_config_path() -> Optional[Path]:
-    env_path = os.getenv("GPT5_ROLEPLAY_CONFIG", "")
-    if env_path:
-        path = Path(env_path)
-        if path.exists():
-            return path
-    local = Path.cwd() / "config.yaml"
-    if local.exists():
-        return local
-    return None
-
-
-def _load_yaml(path: Optional[Path]) -> Dict[str, Any]:
-    if path is None or not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    return data if isinstance(data, dict) else {}
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name, "")
-    if not raw:
-        return bool(default)
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return bool(default)
-
-
-def _parse_optional_bool(value: Any) -> Optional[bool]:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if not text:
-            return None
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off"}:
-            return False
-    return None
-
-
-def _pick_model(llm_data: Dict[str, Any]) -> str:
-    if not llm_data:
-        return "deepseek/deepseek-v3.2"
-    if llm_data.get("thinking_model"):
-        return llm_data["thinking_model"]
-    models = llm_data.get("models", {}) if isinstance(llm_data.get("models"), dict) else {}
-    for key in ("context_understanding", "action_planning", "persona_consistency"):
-        if key in models:
-            return models[key]
-    if isinstance(models, dict) and models:
-        return next(iter(models.values()))
-    return llm_data.get("model", "deepseek/deepseek-v3.2")
 
 
 def load_config(path: Optional[str] = None) -> ServerConfig:
