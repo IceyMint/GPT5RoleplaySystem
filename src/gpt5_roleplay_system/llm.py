@@ -8,7 +8,6 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from .time_utils import format_pacific_time
 from typing import Any, Dict, List, Optional
 
 try:
@@ -25,7 +24,6 @@ except ImportError:  # pragma: no cover - optional dependency
     field_validator = None
 
 from .models import Action, CommandType, ConversationContext, EnvironmentSnapshot, InboundChat, Participant
-from .name_utils import split_display_and_username
 from .llm_prompts import PromptManager
 
 logger = logging.getLogger("gpt5_roleplay_llm")
@@ -588,13 +586,6 @@ class RuleBasedLLMClient(LLMClient):
         context: ConversationContext,
         activity: Dict[str, Any],
     ) -> LLMResponseBundle:
-        return LLMResponseBundle(text="", actions=[], facts=[], participant_hints=[], summary=None)
-
-    async def generate_autonomous_bundle(
-        self,
-        context: ConversationContext,
-        activity: Dict[str, Any],
-    ) -> LLMResponseBundle:
         seconds = float(activity.get("seconds_since_activity", 0.0) or 0.0)
         recent_window = float(activity.get("recent_activity_window_seconds", 45.0) or 45.0)
         if seconds < recent_window:
@@ -1112,23 +1103,14 @@ class OpenRouterLLMClient(LLMClient):
             return await self._fallback.generate_autonomous_bundle(context, activity)
         return _bundle_from_structured(parsed, mode="autonomous")
 
-    def _system_prompt(self) -> str:
-        return self._prompt_manager_instance().system_prompt()
-
     def _system_prompt_for_context(self, context: ConversationContext) -> str:
         return self._prompt_manager_instance().system_prompt_for_context(context)
 
     def _facts_system_prompt(self) -> str:
         return self._prompt_manager_instance().facts_system_prompt()
 
-    def _state_system_prompt(self) -> str:
-        return self._prompt_manager_instance().state_system_prompt()
-
     def _state_system_prompt_for_context(self, context: ConversationContext) -> str:
         return self._prompt_manager_instance().state_system_prompt_for_context(context)
-
-    def _autonomous_system_prompt(self) -> str:
-        return self._prompt_manager_instance().autonomous_system_prompt()
 
     def _autonomous_system_prompt_for_context(self, context: ConversationContext) -> str:
         return self._prompt_manager_instance().autonomous_system_prompt_for_context(context)
@@ -1494,77 +1476,6 @@ class OpenRouterLLMClient(LLMClient):
         message = completion.choices[0].message
         return _message_content_text(message)
 
-    @staticmethod
-    def _serialize_payload(payload: Dict[str, Any]) -> str:
-        # Compact deterministic JSON reduces token count and keeps prefix matching stable.
-        return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-
-    @classmethod
-    def _canonicalize_for_prompt(cls, value: Any) -> Any:
-        if isinstance(value, dict):
-            canonical: Dict[Any, Any] = {}
-            for key in sorted(value.keys(), key=lambda item: str(item)):
-                canonical[key] = cls._canonicalize_for_prompt(value[key])
-            return canonical
-        if isinstance(value, list):
-            return [cls._canonicalize_for_prompt(item) for item in value]
-        return value
-
-    @classmethod
-    def _stable_participants_payload(cls, participants: List[Participant]) -> List[Dict[str, Any]]:
-        payload = [cls._participant_payload(participant) for participant in participants]
-        return sorted(
-            payload,
-            key=lambda item: (
-                str(item.get("user_id") or ""),
-                str(item.get("username") or ""),
-                str(item.get("display_name") or ""),
-            ),
-        )
-
-    @classmethod
-    def _entity_prompt_payload(cls, entry: Any) -> Any:
-        canonical = cls._canonicalize_for_prompt(entry)
-        if not isinstance(canonical, dict):
-            return canonical
-        entity_id = canonical.get("uuid") or canonical.get("target_uuid")
-        if not entity_id:
-            return canonical
-        cleaned = {key: value for key, value in canonical.items() if key != "target_uuid"}
-        cleaned["uuid"] = entity_id
-        return cls._canonicalize_for_prompt(cleaned)
-
-    @classmethod
-    def _stable_entity_list(cls, entries: List[Any]) -> List[Any]:
-        canonical = [cls._entity_prompt_payload(entry) for entry in entries]
-
-        def entity_sort_key(item: Any) -> str:
-            if isinstance(item, dict):
-                stable_json = json.dumps(
-                    item,
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                    default=str,
-                )
-                return "|".join(
-                    [
-                        str(item.get("uuid") or item.get("target_uuid") or ""),
-                        str(item.get("name") or ""),
-                        str(item.get("display_name") or ""),
-                        stable_json,
-                    ]
-                )
-            return json.dumps(
-                item,
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-                default=str,
-            )
-
-        return sorted(canonical, key=entity_sort_key)
-
     def _format_address_check(
         self,
         chat: InboundChat,
@@ -1606,152 +1517,8 @@ class OpenRouterLLMClient(LLMClient):
             people_facts=people_facts,
         )
 
-    @classmethod
-    def _filter_facts_entities(
-        cls,
-        evidence_messages: List[InboundChat],
-        participants: List[Participant],
-        people_facts: Dict[str, Any],
-    ) -> tuple[List[Participant], Dict[str, Dict[str, Any]]]:
-        text_blob = " ".join(str(message.text or "") for message in evidence_messages)
-        sender_ids = {str(message.sender_id or "").strip() for message in evidence_messages if str(message.sender_id or "").strip()}
-        sender_names = {
-            _normalize_name(str(message.sender_name or ""))
-            for message in evidence_messages
-            if str(message.sender_name or "").strip()
-        }
-        sender_names.discard("")
-
-        filtered_people_facts: Dict[str, Dict[str, Any]] = {}
-        relevant_user_ids = set(sender_ids)
-        for raw_user_id, raw_profile in (people_facts or {}).items():
-            user_id = str(raw_user_id or "").strip()
-            profile = raw_profile if isinstance(raw_profile, dict) else {}
-            include = bool(user_id and user_id in sender_ids)
-            if not include:
-                include = cls._profile_mentioned_in_text(profile, text_blob)
-            if not include:
-                continue
-            relevant_user_ids.add(user_id)
-            filtered_people_facts[user_id] = cls._minimal_people_fact_profile(profile)
-
-        filtered_participants: List[Participant] = []
-        seen_participants: set[str] = set()
-        for participant in participants or []:
-            user_id = str(participant.user_id or "").strip()
-            name = str(participant.name or "").strip()
-            include = bool(user_id and user_id in relevant_user_ids)
-            if not include and not user_id:
-                normalized_name = _normalize_name(name)
-                include = bool(normalized_name and normalized_name in sender_names)
-            if not include:
-                include = cls._name_mentioned_in_text(name, text_blob)
-            if not include:
-                continue
-            key = user_id or _normalize_name(name)
-            if not key or key in seen_participants:
-                continue
-            seen_participants.add(key)
-            filtered_participants.append(Participant(user_id=user_id, name=name))
-
-        return filtered_participants, filtered_people_facts
-
-    @staticmethod
-    def _minimal_people_fact_profile(profile: Dict[str, Any], max_facts: int = 6) -> Dict[str, Any]:
-        name = str(
-            profile.get("name")
-            or profile.get("username")
-            or profile.get("display_name")
-            or profile.get("full_name")
-            or ""
-        ).strip()
-        facts_raw = profile.get("facts", [])
-        facts: List[str] = []
-        if isinstance(facts_raw, list):
-            for item in facts_raw:
-                value = str(item or "").strip()
-                if not value:
-                    continue
-                facts.append(value)
-                if len(facts) >= max_facts:
-                    break
-        return {"name": name, "facts": facts}
-
-    @classmethod
-    def _profile_mentioned_in_text(cls, profile: Dict[str, Any], text: str) -> bool:
-        for key in ("name", "username", "display_name", "full_name"):
-            candidate = str(profile.get(key, "") or "").strip()
-            if cls._name_mentioned_in_text(candidate, text):
-                return True
-        return False
-
-    @staticmethod
-    def _name_mentioned_in_text(name: str, text: str) -> bool:
-        raw_name = str(name or "").strip()
-        if not raw_name or _UUID_LIKE_RE.match(raw_name):
-            return False
-        normalized_text = _normalize_name(text)
-        if not normalized_text:
-            return False
-        display_name, username = split_display_and_username(raw_name)
-        for candidate in (raw_name, display_name, username):
-            normalized_candidate = _normalize_name(str(candidate or ""))
-            if len(normalized_candidate) < 3:
-                continue
-            if _UUID_LIKE_RE.match(normalized_candidate):
-                continue
-            if _name_in_text(normalized_candidate, normalized_text):
-                return True
-        return False
-
     def _format_autonomous_context(self, context: ConversationContext, activity: Dict[str, Any]) -> str:
         return self._prompt_manager_instance().format_autonomous_context(context, activity)
-
-    @staticmethod
-    def _chat_payload(chat: InboundChat) -> Dict[str, Any]:
-        raw = chat.raw if isinstance(chat.raw, dict) else {}
-        sender_id = str(chat.sender_id or "")
-        full_name = (
-            str(raw.get("_sender_full_name") or "")
-            or str(raw.get("from_name") or raw.get("sender_name") or "")
-            or str(chat.sender_name or sender_id)
-        )
-        display_name, username = split_display_and_username(full_name)
-        sender_username = str(raw.get("_sender_username") or "") or username or chat.sender_name or sender_id
-        sender_display = str(raw.get("_sender_display_name") or "") or display_name or chat.sender_name or sender_username
-        sender_value = sender_username or sender_display or sender_id
-        payload = {
-            "sender": sender_value,
-            "sender_id": sender_id,
-            "text": chat.text,
-            "timestamp": format_pacific_time(float(chat.timestamp or 0.0)),
-        }
-        if sender_username and sender_username != sender_value:
-            payload["sender_username"] = sender_username
-        if sender_display and sender_display not in {sender_value, sender_username}:
-            payload["sender_display_name"] = sender_display
-        if full_name and full_name not in {sender_value, sender_username, sender_display}:
-            payload["sender_full_name"] = full_name
-        return payload
-
-    @staticmethod
-    def _participant_payload(participant: Participant) -> Dict[str, Any]:
-        full_name = str(participant.name or participant.user_id or "")
-        display_name, username = split_display_and_username(full_name)
-        username_value = username or participant.name or participant.user_id
-        display_value = display_name or participant.name or username_value
-        payload = {
-            "user_id": participant.user_id,
-            "name": username_value,
-        }
-        if username_value and username_value != payload["name"]:
-            payload["username"] = username_value
-        if display_value and display_value != payload["name"]:
-            payload["display_name"] = display_value
-        if full_name and full_name not in {payload["name"], display_value}:
-            payload["full_name"] = full_name
-        return payload
-
 
 def _bundle_from_structured(parsed: StructuredBundle, mode: str = "chat") -> LLMResponseBundle:
     actions: List[Action] = []

@@ -440,20 +440,6 @@ class SimilaritySearch:
         raise NotImplementedError
 
 
-class SimpleSimilaritySearch(SimilaritySearch):
-    def search(self, query: str, experiences: List[ExperienceRecord], top_k: int = 3) -> List[ExperienceRecord]:
-        if not query:
-            return []
-        scored = []
-        query_lower = query.lower()
-        for experience in experiences:
-            text_lower = experience.text.lower()
-            score = 1.0 if query_lower in text_lower else 0.0
-            scored.append((score, experience))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [item[1] for item in scored[:top_k] if item[0] > 0.0]
-
-
 class TokenSimilaritySearch(SimilaritySearch):
     def __init__(self, min_token_len: int = 3) -> None:
         self._min_token_len = min_token_len

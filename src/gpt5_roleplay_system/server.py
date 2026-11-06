@@ -5,7 +5,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
 from .background import spawn_supervised
 from .background_tasks import ExperienceDeduplicationService, FactsDeduplicationService
@@ -19,7 +19,7 @@ from .neo4j_store import InMemoryKnowledgeStore, Neo4jKnowledgeStore, KnowledgeS
 from .observability import NoOpTracer, WandbTracer
 from .protocol import decode_message
 from .session import ClientSession
-from .time_utils import format_pacific_time, get_pacific_timestamp
+from .time_utils import get_pacific_timestamp
 
 
 logger = logging.getLogger("gpt5_roleplay_server")

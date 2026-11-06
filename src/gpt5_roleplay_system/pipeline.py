@@ -10,7 +10,7 @@ import unicodedata
 from typing import Any, Dict, List, Protocol, Set
 
 from .config import EpisodeConfig, FactsConfig
-from .llm import ExtractedFact, LLMClient, LLMResponseBundle, LLMStateUpdate, ParticipantHint
+from .llm import ExtractedFact, LLMClient, LLMResponseBundle, ParticipantHint
 from .llm_prompts import PromptManager
 from .memory import (
     ConversationMemory,
@@ -2679,24 +2679,6 @@ class MessagePipeline:
         }
 
     @staticmethod
-    def _state_update_payload(update: LLMStateUpdate) -> Dict[str, Any]:
-        return {
-            "facts": [
-                {"user_id": fact.user_id, "name": fact.name, "facts": fact.facts}
-                for fact in update.facts
-            ],
-            "participant_hints": [
-                {"user_id": hint.user_id, "name": hint.name}
-                for hint in update.participant_hints
-            ],
-            "summary_update": update.summary_update,
-            "mood": update.mood,
-            "status": update.status,
-            "autonomy_decision": update.autonomy_decision,
-            "next_delay_seconds": update.next_delay_seconds,
-        }
-
-    @staticmethod
     def _partial_name_tokens(name: str) -> List[str]:
         cleaned = name.strip()
         if not cleaned:
@@ -2862,22 +2844,6 @@ class MessagePipeline:
             if not matched:
                 idx += 1
         return matches
-
-    @staticmethod
-    def _looks_like_uuid(value: str) -> bool:
-        candidate = str(value or "").strip()
-        if not candidate:
-            return False
-        parts = candidate.split("-")
-        if len(parts) != 5:
-            return False
-        expected_lengths = (8, 4, 4, 4, 12)
-        for part, expected in zip(parts, expected_lengths):
-            if len(part) != expected:
-                return False
-            if any(ch not in "0123456789abcdefABCDEF" for ch in part):
-                return False
-        return True
 
     @staticmethod
     def _merge_related_experiences(
