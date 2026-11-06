@@ -193,7 +193,6 @@ def test_system_prompt_includes_persona_instructions():
 
 
 def test_system_prompt_enforces_chat_emote_split_rules():
-    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     prompt = PromptManager.system_prompt()
     assert "CHAT CONTENT: Dialogue only." in prompt
     assert "EMOTE CONTENT: Emote/action narration only." in prompt
@@ -201,14 +200,12 @@ def test_system_prompt_enforces_chat_emote_split_rules():
 
 
 def test_system_prompt_maps_entity_uuid_to_action_target_uuid():
-    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     prompt = PromptManager.system_prompt()
     assert "For TOUCH, SIT, and FACE_TARGET" in prompt
     assert "'uuid' into the action field 'target_uuid'" in prompt
 
 
 def test_system_prompt_includes_closure_progression_rules():
-    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     prompt = PromptManager.system_prompt()
     assert "Keep strict persona voice" in prompt
     assert "only closes the previous exchange" in prompt
@@ -218,14 +215,12 @@ def test_system_prompt_includes_closure_progression_rules():
 
 
 def test_system_prompt_marks_previously_as_historical_context():
-    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     prompt = PromptManager.system_prompt()
     assert "Treat 'previously' as historical recap" in prompt
     assert "summary_meta.range_age_seconds" in prompt
 
 
 def test_autonomous_system_prompt_marks_previously_as_historical_context():
-    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     prompt = PromptManager.autonomous_system_prompt()
     assert "Treat 'previously' as historical recap" in prompt
     assert "avoid acting on 'previously' alone" in prompt
@@ -234,7 +229,6 @@ def test_autonomous_system_prompt_marks_previously_as_historical_context():
 
 
 def test_autonomous_system_prompt_maps_entity_uuid_to_action_target_uuid():
-    client = OpenRouterLLMClient(api_key="test-key", base_url="http://localhost:1234", model="test-model")
     prompt = PromptManager.autonomous_system_prompt()
     assert "For TOUCH, SIT, and FACE_TARGET" in prompt
     assert "'uuid' into the action field 'target_uuid'" in prompt

@@ -8,452 +8,6 @@
   "functions": []
  },
  {
-  "file": "src/gpt5_roleplay_system/autonomy_manager.py",
-  "area": "src",
-  "lines": 294,
-  "imports": [
-   "__future__",
-   "time",
-   "typing",
-   "models",
-   "name_utils",
-   "pipeline_state",
-   "time_utils"
-  ],
-  "classes": [
-   {
-    "name": "AutonomyManager",
-    "line": 12,
-    "end": 294,
-    "methods": [
-     {
-      "name": "__init__",
-      "line": 13,
-      "end": 25,
-      "span": 13,
-      "args": [
-       "self",
-       "state"
-      ],
-      "refs": {
-       "src": 26,
-       "tests": 112,
-       "scripts": 3
-      }
-     },
-     {
-      "name": "snapshot_state",
-      "line": 27,
-      "end": 39,
-      "span": 13,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "restore_state",
-      "line": 41,
-      "end": 59,
-      "span": 19,
-      "args": [
-       "self",
-       "state"
-      ],
-      "refs": {
-       "src": 6,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "mark_inbound_activity",
-      "line": 61,
-      "end": 62,
-      "span": 2,
-      "args": [
-       "self",
-       "now_ts"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "mark_response_activity",
-      "line": 64,
-      "end": 65,
-      "span": 2,
-      "args": [
-       "self",
-       "now_ts"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "update_from_bundle",
-      "line": 67,
-      "end": 79,
-      "span": 13,
-      "args": [
-       "self",
-       "bundle"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "apply_scheduler_override",
-      "line": 81,
-      "end": 96,
-      "span": 16,
-      "args": [
-       "self",
-       "decision_value",
-       "delay_value"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "filter_autonomous_actions",
-      "line": 98,
-      "end": 129,
-      "span": 32,
-      "args": [
-       "self",
-       "actions",
-       "participants"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "chat_texts_from_actions",
-      "line": 132,
-      "end": 140,
-      "span": 9,
-      "args": [
-       "actions"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "seconds_since_activity",
-      "line": 142,
-      "end": 145,
-      "span": 4,
-      "args": [
-       "self",
-       "now"
-      ],
-      "refs": {
-       "src": 15,
-       "tests": 9,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "activity_snapshot",
-      "line": 147,
-      "end": 168,
-      "span": 22,
-      "args": [
-       "self",
-       "recent_activity_window_seconds"
-      ],
-      "refs": {
-       "src": 6,
-       "tests": 6,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "agent_state",
-      "line": 170,
-      "end": 190,
-      "span": 21,
-      "args": [
-       "self",
-       "now_ts"
-      ],
-      "refs": {
-       "src": 20,
-       "tests": 16,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "consume_delay_hint_seconds",
-      "line": 192,
-      "end": 195,
-      "span": 4,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "last_inbound_ts",
-      "line": 198,
-      "end": 199,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 9,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "last_response_ts",
-      "line": 202,
-      "end": 203,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 9,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "mood",
-      "line": 206,
-      "end": 207,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 36,
-       "tests": 16,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "mood_ts",
-      "line": 210,
-      "end": 211,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 14,
-       "tests": 2,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "mood_source",
-      "line": 214,
-      "end": 215,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 9,
-       "tests": 2,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "status",
-      "line": 218,
-      "end": 219,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 48,
-       "tests": 22,
-       "scripts": 1
-      }
-     },
-     {
-      "name": "status_ts",
-      "line": 222,
-      "end": 223,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 14,
-       "tests": 2,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "status_source",
-      "line": 226,
-      "end": 227,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 9,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "autonomy_decision",
-      "line": 230,
-      "end": 231,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 35,
-       "tests": 14,
-       "scripts": 1
-      }
-     },
-     {
-      "name": "set_activity_from_timestamp",
-      "line": 233,
-      "end": 236,
-      "span": 4,
-      "args": [
-       "self",
-       "timestamp"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "normalize_autonomy_decision",
-      "line": 239,
-      "end": 248,
-      "span": 10,
-      "args": [
-       "value",
-       "has_actions"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_sanitize_autonomy_delay_hint",
-      "line": 251,
-      "end": 258,
-      "span": 8,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 1,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_autonomy_decision_value",
-      "line": 261,
-      "end": 267,
-      "span": 7,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_clean_optional_text",
-      "line": 270,
-      "end": 274,
-      "span": 5,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_derive_status_from_actions",
-      "line": 276,
-      "end": 281,
-      "span": 6,
-      "args": [
-       "self",
-       "actions",
-       "text"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_status_from_command",
-      "line": 284,
-      "end": 294,
-      "span": 11,
-      "args": [
-       "command_type"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     }
-    ]
-   }
-  ],
-  "functions": []
- },
- {
   "file": "src/gpt5_roleplay_system/background.py",
   "area": "src",
   "lines": 106,
@@ -474,7 +28,7 @@
      "coro"
     ],
     "refs": {
-     "src": 12,
+     "src": 6,
      "tests": 8,
      "scripts": 0
     }
@@ -555,7 +109,7 @@
        "llm_client"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -569,7 +123,7 @@
        "self"
       ],
       "refs": {
-       "src": 5,
+       "src": 3,
        "tests": 0,
        "scripts": 1
       }
@@ -606,7 +160,7 @@
        "knowledge_store"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -620,7 +174,7 @@
        "self"
       ],
       "refs": {
-       "src": 5,
+       "src": 3,
        "tests": 0,
        "scripts": 1
       }
@@ -647,157 +201,85 @@
  {
   "file": "src/gpt5_roleplay_system/config.py",
   "area": "src",
-  "lines": 217,
+  "lines": 149,
   "imports": [
    "__future__",
-   "os",
    "dataclasses",
-   "pathlib",
-   "typing",
-   "yaml"
+   "typing"
   ],
   "classes": [
    {
     "name": "LLMConfig",
-    "line": 12,
-    "end": 34,
+    "line": 8,
+    "end": 30,
     "methods": []
    },
    {
     "name": "Neo4jConfig",
-    "line": 38,
-    "end": 42,
+    "line": 34,
+    "end": 38,
     "methods": []
    },
    {
     "name": "MemoryConfig",
-    "line": 46,
-    "end": 49,
+    "line": 42,
+    "end": 45,
     "methods": []
    },
    {
     "name": "KnowledgeConfig",
-    "line": 53,
-    "end": 61,
+    "line": 49,
+    "end": 57,
     "methods": []
    },
    {
     "name": "FactsConfig",
-    "line": 65,
-    "end": 73,
+    "line": 61,
+    "end": 69,
     "methods": []
    },
    {
     "name": "FactsDeduplicationConfig",
-    "line": 77,
-    "end": 79,
+    "line": 73,
+    "end": 75,
     "methods": []
    },
    {
     "name": "ExperienceDeduplicationConfig",
-    "line": 83,
-    "end": 89,
+    "line": 79,
+    "end": 85,
     "methods": []
    },
    {
     "name": "EpisodeConfig",
-    "line": 93,
-    "end": 101,
+    "line": 89,
+    "end": 97,
     "methods": []
    },
    {
     "name": "AutonomyConfig",
-    "line": 105,
-    "end": 113,
+    "line": 101,
+    "end": 109,
     "methods": []
    },
    {
     "name": "WandbConfig",
-    "line": 117,
-    "end": 121,
+    "line": 113,
+    "end": 117,
     "methods": []
    },
    {
     "name": "ServerConfig",
-    "line": 125,
-    "end": 147,
+    "line": 121,
+    "end": 143,
     "methods": []
    }
   ],
   "functions": [
    {
-    "name": "_resolve_default_config_path",
-    "line": 150,
-    "end": 159,
-    "span": 10,
-    "args": [],
-    "refs": {
-     "src": 2,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "_load_yaml",
-    "line": 162,
-    "end": 167,
-    "span": 6,
-    "args": [
-     "path"
-    ],
-    "refs": {
-     "src": 3,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "_env_bool",
-    "line": 170,
-    "end": 179,
-    "span": 10,
-    "args": [
-     "name",
-     "default"
-    ],
-    "refs": {
-     "src": 2,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "_parse_optional_bool",
-    "line": 182,
-    "end": 197,
-    "span": 16,
-    "args": [
-     "value"
-    ],
-    "refs": {
-     "src": 5,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "_pick_model",
-    "line": 200,
-    "end": 211,
-    "span": 12,
-    "args": [
-     "llm_data"
-    ],
-    "refs": {
-     "src": 2,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
     "name": "load_config",
-    "line": 214,
-    "end": 217,
+    "line": 146,
+    "end": 149,
     "span": 4,
     "args": [
      "path"
@@ -846,7 +328,7 @@
        "env"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -997,7 +479,7 @@
        "self"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -1011,7 +493,7 @@
        "path"
       ],
       "refs": {
-       "src": 3,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
@@ -1057,7 +539,7 @@
        "default"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -1071,7 +553,7 @@
        "value"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 0,
        "scripts": 0
       }
@@ -1085,7 +567,7 @@
        "llm_data"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -1126,720 +608,6 @@
     }
    }
   ]
- },
- {
-  "file": "src/gpt5_roleplay_system/config_validation.py",
-  "area": "src",
-  "lines": 48,
-  "imports": [
-   "__future__",
-   "typing"
-  ],
-  "classes": [],
-  "functions": []
- },
- {
-  "file": "src/gpt5_roleplay_system/context_builder.py",
-  "area": "src",
-  "lines": 754,
-  "imports": [
-   "__future__",
-   "asyncio",
-   "time",
-   "difflib",
-   "typing",
-   "background",
-   "memory",
-   "models",
-   "name_utils",
-   "payload_contract",
-   "neo4j_store",
-   "observability",
-   "pipeline_state",
-   "time_utils"
-  ],
-  "classes": [
-   {
-    "name": "ExperienceIndexProtocol",
-    "line": 26,
-    "end": 31,
-    "methods": [
-     {
-      "name": "is_enabled",
-      "line": 27,
-      "end": 28,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 13,
-       "tests": 3,
-       "scripts": 1
-      }
-     },
-     {
-      "name": "search",
-      "line": 30,
-      "end": 31,
-      "span": 2,
-      "args": [
-       "self",
-       "query",
-       "persona_id",
-       "top_k"
-      ],
-      "refs": {
-       "src": 11,
-       "tests": 4,
-       "scripts": 1
-      }
-     }
-    ]
-   },
-   {
-    "name": "ContextBuilder",
-    "line": 34,
-    "end": 754,
-    "methods": [
-     {
-      "name": "__init__",
-      "line": 35,
-      "end": 74,
-      "span": 40,
-      "args": [
-       "self",
-       "state",
-       "knowledge_store",
-       "memory",
-       "experience_store",
-       "tracer",
-       "experience_vector_index",
-       "experience_top_k",
-       "experience_score_min",
-       "experience_score_delta",
-       "near_duplicate_collapse_enabled",
-       "near_duplicate_similarity",
-       "routine_summary_enabled",
-       "routine_summary_limit",
-       "routine_summary_min_count",
-       "max_environment_participants",
-       "persona_profiles",
-       "owner"
-      ],
-      "refs": {
-       "src": 26,
-       "tests": 112,
-       "scripts": 3
-      }
-     },
-     {
-      "name": "upsert_persona_profile",
-      "line": 76,
-      "end": 81,
-      "span": 6,
-      "args": [
-       "self",
-       "persona",
-       "instructions"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "update_environment",
-      "line": 83,
-      "end": 113,
-      "span": 31,
-      "args": [
-       "self",
-       "data"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 15,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "build_chat",
-      "line": 115,
-      "end": 136,
-      "span": 22,
-      "args": [
-       "self",
-       "data"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "merge_participants",
-      "line": 138,
-      "end": 146,
-      "span": 9,
-      "args": [
-       "self",
-       "chats"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "participants_from_messages",
-      "line": 148,
-      "end": 173,
-      "span": 26,
-      "args": [
-       "self",
-       "messages",
-       "base_participants"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "participants_for_autonomy",
-      "line": 175,
-      "end": 196,
-      "span": 22,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "build_context",
-      "line": 198,
-      "end": 235,
-      "span": 38,
-      "args": [
-       "self",
-       "chat",
-       "participants",
-       "query_text"
-      ],
-      "refs": {
-       "src": 2,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "build_facts_context",
-      "line": 237,
-      "end": 258,
-      "span": 22,
-      "args": [
-       "self",
-       "participants",
-       "evidence_messages"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "collapse_batch",
-      "line": 260,
-      "end": 291,
-      "span": 32,
-      "args": [
-       "self",
-       "chats"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "participant_payload",
-      "line": 293,
-      "end": 304,
-      "span": 12,
-      "args": [
-       "self",
-       "participant"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "chat_payload",
-      "line": 306,
-      "end": 342,
-      "span": 37,
-      "args": [
-       "self",
-       "chat"
-      ],
-      "refs": {
-       "src": 9,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "environment_payload",
-      "line": 344,
-      "end": 351,
-      "span": 8,
-      "args": [
-       "self",
-       "object_limit"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "snapshot_state",
-      "line": 353,
-      "end": 368,
-      "span": 16,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "restore_state",
-      "line": 370,
-      "end": 400,
-      "span": 31,
-      "args": [
-       "self",
-       "state"
-      ],
-      "refs": {
-       "src": 6,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_resolve_participants",
-      "line": 402,
-      "end": 442,
-      "span": 41,
-      "args": [
-       "self",
-       "chat"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_memory_items_to_chats",
-      "line": 444,
-      "end": 465,
-      "span": 22,
-      "args": [
-       "self",
-       "items"
-      ],
-      "refs": {
-       "src": 8,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_people_facts_for_participants",
-      "line": 467,
-      "end": 499,
-      "span": 33,
-      "args": [
-       "self",
-       "participants"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_record_display_name",
-      "line": 501,
-      "end": 508,
-      "span": 8,
-      "args": [
-       "self",
-       "user_id",
-       "full_name"
-      ],
-      "refs": {
-       "src": 18,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_full_name_for",
-      "line": 510,
-      "end": 513,
-      "span": 4,
-      "args": [
-       "self",
-       "user_id",
-       "fallback_name"
-      ],
-      "refs": {
-       "src": 13,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_update_last_seen_cache_from_agents",
-      "line": 515,
-      "end": 528,
-      "span": 14,
-      "args": [
-       "self",
-       "agents",
-       "timestamp"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_update_last_seen_from_agents",
-      "line": 530,
-      "end": 544,
-      "span": 15,
-      "args": [
-       "self",
-       "agents",
-       "timestamp"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_schedule_update_last_seen_from_agents",
-      "line": 546,
-      "end": 557,
-      "span": 12,
-      "args": [
-       "self",
-       "agents",
-       "timestamp"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_participant_key",
-      "line": 559,
-      "end": 563,
-      "span": 5,
-      "args": [
-       "self",
-       "user_id",
-       "name"
-      ],
-      "refs": {
-       "src": 12,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_participant_records",
-      "line": 565,
-      "end": 576,
-      "span": 12,
-      "args": [
-       "self",
-       "participants"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_is_self_participant",
-      "line": 578,
-      "end": 583,
-      "span": 6,
-      "args": [
-       "self",
-       "user_id",
-       "name"
-      ],
-      "refs": {
-       "src": 22,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_is_self_message",
-      "line": 585,
-      "end": 592,
-      "span": 8,
-      "args": [
-       "self",
-       "chat"
-      ],
-      "refs": {
-       "src": 6,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_chat_full_name",
-      "line": 594,
-      "end": 601,
-      "span": 8,
-      "args": [
-       "self",
-       "chat"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_name",
-      "line": 604,
-      "end": 605,
-      "span": 2,
-      "args": [
-       "name"
-      ],
-      "refs": {
-       "src": 18,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_name_for_match",
-      "line": 608,
-      "end": 609,
-      "span": 2,
-      "args": [
-       "name"
-      ],
-      "refs": {
-       "src": 18,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_name_key",
-      "line": 611,
-      "end": 618,
-      "span": 8,
-      "args": [
-       "self",
-       "name"
-      ],
-      "refs": {
-       "src": 12,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_canonical_name",
-      "line": 621,
-      "end": 629,
-      "span": 9,
-      "args": [
-       "user_id",
-       "name"
-      ],
-      "refs": {
-       "src": 11,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_persona_instructions",
-      "line": 631,
-      "end": 635,
-      "span": 5,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_dedupe_preserve_order",
-      "line": 638,
-      "end": 647,
-      "span": 10,
-      "args": [
-       "items"
-      ],
-      "refs": {
-       "src": 15,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_fact_key",
-      "line": 650,
-      "end": 654,
-      "span": 5,
-      "args": [
-       "text"
-      ],
-      "refs": {
-       "src": 15,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_experiences_for_persona",
-      "line": 656,
-      "end": 666,
-      "span": 11,
-      "args": [
-       "self",
-       "experiences"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_collapse_near_duplicate_experiences",
-      "line": 668,
-      "end": 711,
-      "span": 44,
-      "args": [
-       "self",
-       "experiences"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_experience_text",
-      "line": 714,
-      "end": 716,
-      "span": 3,
-      "args": [
-       "text"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_near_duplicate_similarity_score",
-      "line": 719,
-      "end": 728,
-      "span": 10,
-      "args": [
-       "left",
-       "right"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_token_jaccard",
-      "line": 731,
-      "end": 737,
-      "span": 7,
-      "args": [
-       "left",
-       "right"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_entities",
-      "line": 740,
-      "end": 754,
-      "span": 15,
-      "args": [
-       "entries"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     }
-    ]
-   }
-  ],
-  "functions": []
  },
  {
   "file": "src/gpt5_roleplay_system/controller.py",
@@ -1900,7 +668,7 @@
        "config_path"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -1945,7 +713,7 @@
        "data"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 15,
        "scripts": 0
       }
@@ -2018,7 +786,7 @@
        "self"
       ],
       "refs": {
-       "src": 30,
+       "src": 18,
        "tests": 82,
        "scripts": 4
       }
@@ -2076,7 +844,7 @@
        "recent_activity_window_seconds"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 6,
        "scripts": 0
       }
@@ -2090,7 +858,7 @@
        "self"
       ],
       "refs": {
-       "src": 138,
+       "src": 113,
        "tests": 146,
        "scripts": 8
       }
@@ -2104,7 +872,7 @@
        "self"
       ],
       "refs": {
-       "src": 481,
+       "src": 355,
        "tests": 182,
        "scripts": 9
       }
@@ -2299,8 +1067,8 @@
        "max_gap_seconds"
       ],
       "refs": {
-       "src": 2,
-       "tests": 0,
+       "src": 1,
+       "tests": 2,
        "scripts": 0
       }
      }
@@ -2317,7 +1085,7 @@
      "response_text"
     ],
     "refs": {
-     "src": 5,
+     "src": 3,
      "tests": 0,
      "scripts": 0
     }
@@ -2384,195 +1152,6 @@
     }
    }
   ]
- },
- {
-  "file": "src/gpt5_roleplay_system/episode_manager.py",
-  "area": "src",
-  "lines": 193,
-  "imports": [
-   "__future__",
-   "asyncio",
-   "time",
-   "typing",
-   "background",
-   "config",
-   "llm",
-   "memory",
-   "models",
-   "pipeline_state",
-   "time_utils",
-   "observability"
-  ],
-  "classes": [
-   {
-    "name": "ExperienceIndexProtocol",
-    "line": 17,
-    "end": 22,
-    "methods": [
-     {
-      "name": "is_enabled",
-      "line": 18,
-      "end": 19,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 13,
-       "tests": 3,
-       "scripts": 1
-      }
-     },
-     {
-      "name": "add_record_async",
-      "line": 21,
-      "end": 22,
-      "span": 2,
-      "args": [
-       "self",
-       "record",
-       "persona_id"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 3,
-       "scripts": 0
-      }
-     }
-    ]
-   },
-   {
-    "name": "EpisodeManager",
-    "line": 25,
-    "end": 193,
-    "methods": [
-     {
-      "name": "__init__",
-      "line": 26,
-      "end": 54,
-      "span": 29,
-      "args": [
-       "self",
-       "state",
-       "llm",
-       "rolling_buffer",
-       "experience_store",
-       "tracer",
-       "episode_config",
-       "experience_vector_index",
-       "compressor"
-      ],
-      "refs": {
-       "src": 26,
-       "tests": 112,
-       "scripts": 3
-      }
-     },
-     {
-      "name": "snapshot_state",
-      "line": 56,
-      "end": 60,
-      "span": 5,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "restore_state",
-      "line": 62,
-      "end": 66,
-      "span": 5,
-      "args": [
-       "self",
-       "state"
-      ],
-      "refs": {
-       "src": 6,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "schedule_check",
-      "line": 68,
-      "end": 85,
-      "span": 18,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "maybe_finalize",
-      "line": 87,
-      "end": 139,
-      "span": 53,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "wait_for_idle",
-      "line": 141,
-      "end": 148,
-      "span": 8,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_summarize_episode",
-      "line": 150,
-      "end": 170,
-      "span": 21,
-      "args": [
-       "self",
-       "items"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_episode_metadata",
-      "line": 173,
-      "end": 193,
-      "span": 21,
-      "args": [
-       "items",
-       "reason"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     }
-    ]
-   }
-  ],
-  "functions": []
  },
  {
   "file": "src/gpt5_roleplay_system/experience_vector.py",
@@ -2680,7 +1259,7 @@
        "cache_size"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -2769,7 +1348,7 @@
        "max_items"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -2783,7 +1362,7 @@
        "self"
       ],
       "refs": {
-       "src": 13,
+       "src": 10,
        "tests": 3,
        "scripts": 1
       }
@@ -2799,7 +1378,7 @@
        "persona_id"
       ],
       "refs": {
-       "src": 5,
+       "src": 3,
        "tests": 3,
        "scripts": 0
       }
@@ -2905,406 +1484,33 @@
   ]
  },
  {
-  "file": "src/gpt5_roleplay_system/fact_manager.py",
-  "area": "src",
-  "lines": 465,
-  "imports": [
-   "__future__",
-   "asyncio",
-   "time",
-   "typing",
-   "background",
-   "config",
-   "llm",
-   "memory",
-   "models",
-   "neo4j_store",
-   "observability",
-   "pipeline_state"
-  ],
-  "classes": [
-   {
-    "name": "FactManager",
-    "line": 17,
-    "end": 465,
-    "methods": [
-     {
-      "name": "__init__",
-      "line": 18,
-      "end": 51,
-      "span": 34,
-      "args": [
-       "self",
-       "state",
-       "llm",
-       "knowledge_store",
-       "tracer",
-       "facts_config",
-       "context_builder",
-       "autonomy_manager",
-       "owner"
-      ],
-      "refs": {
-       "src": 26,
-       "tests": 112,
-       "scripts": 3
-      }
-     },
-     {
-      "name": "snapshot_state",
-      "line": 53,
-      "end": 68,
-      "span": 16,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "restore_state",
-      "line": 70,
-      "end": 106,
-      "span": 37,
-      "args": [
-       "self",
-       "state"
-      ],
-      "refs": {
-       "src": 6,
-       "tests": 3,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "recover_pending_from_memory",
-      "line": 108,
-      "end": 119,
-      "span": 12,
-      "args": [
-       "self",
-       "recent_items"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "maybe_schedule_periodic_sweep",
-      "line": 121,
-      "end": 134,
-      "span": 14,
-      "args": [
-       "self",
-       "recent_chats",
-       "overflow_chats",
-       "participants"
-      ],
-      "refs": {
-       "src": 2,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "schedule_store_facts",
-      "line": 136,
-      "end": 149,
-      "span": 14,
-      "args": [
-       "self",
-       "facts",
-       "participants"
-      ],
-      "refs": {
-       "src": 2,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "store_facts",
-      "line": 151,
-      "end": 225,
-      "span": 75,
-      "args": [
-       "self",
-       "facts",
-       "participants"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 1,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "wait_for_idle",
-      "line": 227,
-      "end": 237,
-      "span": 11,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_enqueue_fact_messages",
-      "line": 239,
-      "end": 261,
-      "span": 23,
-      "args": [
-       "self",
-       "messages",
-       "participants"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 7,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_fact_message_key",
-      "line": 263,
-      "end": 268,
-      "span": 6,
-      "args": [
-       "self",
-       "message"
-      ],
-      "refs": {
-       "src": 8,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_facts_pending_age_seconds",
-      "line": 270,
-      "end": 274,
-      "span": 5,
-      "args": [
-       "self",
-       "now"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_fact_flush_reason",
-      "line": 276,
-      "end": 288,
-      "span": 13,
-      "args": [
-       "self",
-       "now",
-       "overflow_present"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_maybe_start_facts_worker",
-      "line": 290,
-      "end": 316,
-      "span": 27,
-      "args": [
-       "self",
-       "overflow_present"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 8,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_facts_worker",
-      "line": 318,
-      "end": 360,
-      "span": 43,
-      "args": [
-       "self",
-       "pending_messages",
-       "pending_participants",
-       "flush_reason",
-       "pending_before",
-       "pending_age_seconds"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_extract_and_store_facts",
-      "line": 362,
-      "end": 396,
-      "span": 35,
-      "args": [
-       "self",
-       "messages",
-       "participants"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_serialize_inbound_chat_state",
-      "line": 399,
-      "end": 407,
-      "span": 9,
-      "args": [
-       "chat"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_deserialize_inbound_chat_state",
-      "line": 410,
-      "end": 420,
-      "span": 11,
-      "args": [
-       "raw"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_memory_items_to_chats",
-      "line": 423,
-      "end": 435,
-      "span": 13,
-      "args": [
-       "items"
-      ],
-      "refs": {
-       "src": 8,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_participant_key",
-      "line": 438,
-      "end": 441,
-      "span": 4,
-      "args": [
-       "user_id",
-       "name"
-      ],
-      "refs": {
-       "src": 12,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_name_for_match",
-      "line": 444,
-      "end": 446,
-      "span": 3,
-      "args": [
-       "name"
-      ],
-      "refs": {
-       "src": 18,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_fact_key",
-      "line": 449,
-      "end": 453,
-      "span": 5,
-      "args": [
-       "text"
-      ],
-      "refs": {
-       "src": 15,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_dedupe_preserve_order",
-      "line": 456,
-      "end": 465,
-      "span": 10,
-      "args": [
-       "items"
-      ],
-      "refs": {
-       "src": 15,
-       "tests": 0,
-       "scripts": 0
-      }
-     }
-    ]
-   }
-  ],
-  "functions": []
- },
- {
   "file": "src/gpt5_roleplay_system/llm.py",
   "area": "src",
-  "lines": 2049,
+  "lines": 1804,
   "imports": [
    "__future__",
    "asyncio",
    "json",
    "logging",
+   "math",
    "re",
    "threading",
    "time",
    "dataclasses",
-   "time_utils",
    "typing",
    "models",
-   "name_utils",
-   "llm_prompts",
-   "llm_response_mapper",
-   "llm_structured_parser",
-   "llm_transport"
+   "llm_prompts"
   ],
   "classes": [
    {
     "name": "PromptCacheUsageSample",
-    "line": 170,
-    "end": 180,
+    "line": 166,
+    "end": 176,
     "methods": [
      {
       "name": "uncached_prompt_tokens",
-      "line": 179,
-      "end": 180,
+      "line": 175,
+      "end": 176,
       "span": 2,
       "args": [
        "self"
@@ -3319,27 +1525,27 @@
    },
    {
     "name": "PromptCacheStats",
-    "line": 220,
-    "end": 273,
+    "line": 216,
+    "end": 269,
     "methods": [
      {
       "name": "__init__",
-      "line": 221,
-      "end": 232,
+      "line": 217,
+      "end": 228,
       "span": 12,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
      },
      {
       "name": "record",
-      "line": 234,
-      "end": 248,
+      "line": 230,
+      "end": 244,
       "span": 15,
       "args": [
        "self",
@@ -3347,21 +1553,21 @@
        "sample"
       ],
       "refs": {
-       "src": 62,
+       "src": 59,
        "tests": 3,
        "scripts": 4
       }
      },
      {
       "name": "snapshot",
-      "line": 250,
-      "end": 273,
+      "line": 246,
+      "end": 269,
       "span": 24,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 35,
+       "src": 32,
        "tests": 36,
        "scripts": 11
       }
@@ -3370,43 +1576,43 @@
    },
    {
     "name": "ExtractedFact",
-    "line": 309,
-    "end": 312,
+    "line": 305,
+    "end": 308,
     "methods": []
    },
    {
     "name": "LLMResponse",
-    "line": 316,
-    "end": 318,
+    "line": 312,
+    "end": 314,
     "methods": []
    },
    {
     "name": "ParticipantHint",
-    "line": 322,
-    "end": 324,
+    "line": 318,
+    "end": 320,
     "methods": []
    },
    {
     "name": "LLMResponseBundle",
-    "line": 328,
-    "end": 337,
+    "line": 324,
+    "end": 333,
     "methods": []
    },
    {
     "name": "LLMStateUpdate",
-    "line": 341,
-    "end": 348,
+    "line": 337,
+    "end": 344,
     "methods": []
    },
    {
     "name": "LLMClient",
-    "line": 448,
-    "end": 527,
+    "line": 444,
+    "end": 523,
     "methods": [
      {
       "name": "is_addressed_to_me",
-      "line": 449,
-      "end": 457,
+      "line": 445,
+      "end": 453,
       "span": 9,
       "args": [
        "self",
@@ -3424,8 +1630,8 @@
      },
      {
       "name": "generate_response",
-      "line": 459,
-      "end": 460,
+      "line": 455,
+      "end": 456,
       "span": 2,
       "args": [
        "self",
@@ -3440,8 +1646,8 @@
      },
      {
       "name": "extract_facts",
-      "line": 462,
-      "end": 463,
+      "line": 458,
+      "end": 459,
       "span": 2,
       "args": [
        "self",
@@ -3456,8 +1662,8 @@
      },
      {
       "name": "summarize_overflow",
-      "line": 465,
-      "end": 466,
+      "line": 461,
+      "end": 462,
       "span": 2,
       "args": [
        "self",
@@ -3472,23 +1678,23 @@
      },
      {
       "name": "summarize_episode",
-      "line": 468,
-      "end": 469,
+      "line": 464,
+      "end": 465,
       "span": 2,
       "args": [
        "self",
        "messages"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 8,
        "scripts": 0
       }
      },
      {
       "name": "generate_bundle",
-      "line": 471,
-      "end": 489,
+      "line": 467,
+      "end": 485,
       "span": 19,
       "args": [
        "self",
@@ -3505,8 +1711,8 @@
      },
      {
       "name": "generate_state_update",
-      "line": 491,
-      "end": 506,
+      "line": 487,
+      "end": 502,
       "span": 16,
       "args": [
        "self",
@@ -3523,8 +1729,8 @@
      },
      {
       "name": "generate_autonomous_bundle",
-      "line": 508,
-      "end": 513,
+      "line": 504,
+      "end": 509,
       "span": 6,
       "args": [
        "self",
@@ -3532,15 +1738,15 @@
        "activity"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 2,
        "scripts": 2
       }
      },
      {
       "name": "extract_facts_from_evidence_sync",
-      "line": 515,
-      "end": 521,
+      "line": 511,
+      "end": 517,
       "span": 7,
       "args": [
        "self",
@@ -3549,30 +1755,30 @@
        "participants"
       ],
       "refs": {
-       "src": 3,
+       "src": 2,
        "tests": 3,
        "scripts": 0
       }
      },
      {
       "name": "consume_reasoning_trace",
-      "line": 523,
-      "end": 524,
+      "line": 519,
+      "end": 520,
       "span": 2,
       "args": [
        "self",
        "label"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 4,
        "scripts": 0
       }
      },
      {
       "name": "consume_quality_fallback_events",
-      "line": 526,
-      "end": 527,
+      "line": 522,
+      "end": 523,
       "span": 2,
       "args": [
        "self"
@@ -3587,13 +1793,13 @@
    },
    {
     "name": "RuleBasedLLMClient",
-    "line": 530,
-    "end": 611,
+    "line": 526,
+    "end": 600,
     "methods": [
      {
       "name": "is_addressed_to_me",
-      "line": 531,
-      "end": 557,
+      "line": 527,
+      "end": 553,
       "span": 27,
       "args": [
        "self",
@@ -3611,8 +1817,8 @@
      },
      {
       "name": "generate_response",
-      "line": 559,
-      "end": 561,
+      "line": 555,
+      "end": 557,
       "span": 3,
       "args": [
        "self",
@@ -3627,8 +1833,8 @@
      },
      {
       "name": "extract_facts",
-      "line": 563,
-      "end": 564,
+      "line": 559,
+      "end": 560,
       "span": 2,
       "args": [
        "self",
@@ -3643,8 +1849,8 @@
      },
      {
       "name": "summarize_overflow",
-      "line": 566,
-      "end": 567,
+      "line": 562,
+      "end": 563,
       "span": 2,
       "args": [
        "self",
@@ -3659,23 +1865,23 @@
      },
      {
       "name": "summarize_episode",
-      "line": 569,
-      "end": 570,
+      "line": 565,
+      "end": 566,
       "span": 2,
       "args": [
        "self",
        "messages"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 8,
        "scripts": 0
       }
      },
      {
       "name": "generate_bundle",
-      "line": 572,
-      "end": 586,
+      "line": 568,
+      "end": 582,
       "span": 15,
       "args": [
        "self",
@@ -3692,24 +1898,8 @@
      },
      {
       "name": "generate_autonomous_bundle",
-      "line": 588,
-      "end": 593,
-      "span": 6,
-      "args": [
-       "self",
-       "context",
-       "activity"
-      ],
-      "refs": {
-       "src": 6,
-       "tests": 2,
-       "scripts": 2
-      }
-     },
-     {
-      "name": "generate_autonomous_bundle",
-      "line": 595,
-      "end": 611,
+      "line": 584,
+      "end": 600,
       "span": 17,
       "args": [
        "self",
@@ -3717,7 +1907,7 @@
        "activity"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 2,
        "scripts": 2
       }
@@ -3726,13 +1916,13 @@
    },
    {
     "name": "EchoLLMClient",
-    "line": 614,
-    "end": 653,
+    "line": 603,
+    "end": 642,
     "methods": [
      {
       "name": "is_addressed_to_me",
-      "line": 615,
-      "end": 623,
+      "line": 604,
+      "end": 612,
       "span": 9,
       "args": [
        "self",
@@ -3750,8 +1940,8 @@
      },
      {
       "name": "generate_response",
-      "line": 625,
-      "end": 628,
+      "line": 614,
+      "end": 617,
       "span": 4,
       "args": [
        "self",
@@ -3766,8 +1956,8 @@
      },
      {
       "name": "extract_facts",
-      "line": 630,
-      "end": 631,
+      "line": 619,
+      "end": 620,
       "span": 2,
       "args": [
        "self",
@@ -3782,8 +1972,8 @@
      },
      {
       "name": "summarize_overflow",
-      "line": 633,
-      "end": 634,
+      "line": 622,
+      "end": 623,
       "span": 2,
       "args": [
        "self",
@@ -3798,23 +1988,23 @@
      },
      {
       "name": "summarize_episode",
-      "line": 636,
-      "end": 637,
+      "line": 625,
+      "end": 626,
       "span": 2,
       "args": [
        "self",
        "messages"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 8,
        "scripts": 0
       }
      },
      {
       "name": "generate_bundle",
-      "line": 639,
-      "end": 653,
+      "line": 628,
+      "end": 642,
       "span": 15,
       "args": [
        "self",
@@ -3833,14 +2023,14 @@
    },
    {
     "name": "OpenRouterLLMClient",
-    "line": 656,
-    "end": 1765,
+    "line": 645,
+    "end": 1521,
     "methods": [
      {
       "name": "__init__",
-      "line": 657,
-      "end": 725,
-      "span": 69,
+      "line": 646,
+      "end": 704,
+      "span": 59,
       "args": [
        "self",
        "api_key",
@@ -3862,29 +2052,29 @@
        "facts_provider_allow_fallbacks"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
      },
      {
       "name": "_prompt_manager_instance",
-      "line": 727,
-      "end": 733,
+      "line": 706,
+      "end": 712,
       "span": 7,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 16,
+       "src": 13,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_reasoning_trace_store",
-      "line": 735,
-      "end": 741,
+      "line": 714,
+      "end": 720,
       "span": 7,
       "args": [
        "self"
@@ -3897,38 +2087,38 @@
      },
      {
       "name": "_clear_reasoning_trace",
-      "line": 743,
-      "end": 746,
+      "line": 722,
+      "end": 725,
       "span": 4,
       "args": [
        "self",
        "label"
       ],
       "refs": {
-       "src": 5,
+       "src": 3,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "consume_reasoning_trace",
-      "line": 748,
-      "end": 752,
+      "line": 727,
+      "end": 731,
       "span": 5,
       "args": [
        "self",
        "label"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 4,
        "scripts": 0
       }
      },
      {
       "name": "_quality_fallback_event_store",
-      "line": 754,
-      "end": 760,
+      "line": 733,
+      "end": 739,
       "span": 7,
       "args": [
        "self"
@@ -3941,8 +2131,8 @@
      },
      {
       "name": "_quality_fallback_warned_store",
-      "line": 762,
-      "end": 768,
+      "line": 741,
+      "end": 747,
       "span": 7,
       "args": [
        "self"
@@ -3955,8 +2145,8 @@
      },
      {
       "name": "_quality_fallback_lock_instance",
-      "line": 770,
-      "end": 776,
+      "line": 749,
+      "end": 755,
       "span": 7,
       "args": [
        "self"
@@ -3969,8 +2159,8 @@
      },
      {
       "name": "_record_quality_fallback",
-      "line": 778,
-      "end": 808,
+      "line": 757,
+      "end": 787,
       "span": 31,
       "args": [
        "self"
@@ -3983,8 +2173,8 @@
      },
      {
       "name": "consume_quality_fallback_events",
-      "line": 810,
-      "end": 814,
+      "line": 789,
+      "end": 793,
       "span": 5,
       "args": [
        "self"
@@ -3997,8 +2187,8 @@
      },
      {
       "name": "_record_reasoning_trace",
-      "line": 816,
-      "end": 870,
+      "line": 795,
+      "end": 849,
       "span": 55,
       "args": [
        "self",
@@ -4008,15 +2198,15 @@
        "completion"
       ],
       "refs": {
-       "src": 11,
+       "src": 5,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_record_cache_usage",
-      "line": 872,
-      "end": 890,
+      "line": 851,
+      "end": 869,
       "span": 19,
       "args": [
        "self",
@@ -4024,29 +2214,29 @@
        "completion"
       ],
       "refs": {
-       "src": 11,
+       "src": 5,
        "tests": 9,
        "scripts": 0
       }
      },
      {
       "name": "_provider_payload",
-      "line": 892,
-      "end": 909,
+      "line": 871,
+      "end": 888,
       "span": 18,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 2
       }
      },
      {
       "name": "_apply_extra_body",
-      "line": 911,
-      "end": 928,
+      "line": 890,
+      "end": 907,
       "span": 18,
       "args": [
        "self",
@@ -4060,8 +2250,8 @@
      },
      {
       "name": "is_addressed_to_me",
-      "line": 930,
-      "end": 955,
+      "line": 909,
+      "end": 934,
       "span": 26,
       "args": [
        "self",
@@ -4079,8 +2269,8 @@
      },
      {
       "name": "generate_response",
-      "line": 957,
-      "end": 959,
+      "line": 936,
+      "end": 938,
       "span": 3,
       "args": [
        "self",
@@ -4095,8 +2285,8 @@
      },
      {
       "name": "extract_facts",
-      "line": 961,
-      "end": 963,
+      "line": 940,
+      "end": 942,
       "span": 3,
       "args": [
        "self",
@@ -4111,8 +2301,8 @@
      },
      {
       "name": "summarize_overflow",
-      "line": 965,
-      "end": 1001,
+      "line": 944,
+      "end": 980,
       "span": 37,
       "args": [
        "self",
@@ -4127,23 +2317,23 @@
      },
      {
       "name": "summarize_episode",
-      "line": 1003,
-      "end": 1032,
+      "line": 982,
+      "end": 1011,
       "span": 30,
       "args": [
        "self",
        "messages"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 8,
        "scripts": 0
       }
      },
      {
       "name": "generate_bundle",
-      "line": 1034,
-      "end": 1072,
+      "line": 1013,
+      "end": 1051,
       "span": 39,
       "args": [
        "self",
@@ -4160,8 +2350,8 @@
      },
      {
       "name": "generate_state_update",
-      "line": 1074,
-      "end": 1101,
+      "line": 1053,
+      "end": 1080,
       "span": 28,
       "args": [
        "self",
@@ -4178,8 +2368,8 @@
      },
      {
       "name": "generate_autonomous_bundle",
-      "line": 1103,
-      "end": 1125,
+      "line": 1082,
+      "end": 1104,
       "span": 23,
       "args": [
        "self",
@@ -4187,29 +2377,15 @@
        "activity"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 2,
        "scripts": 2
       }
      },
      {
-      "name": "_system_prompt",
-      "line": 1127,
-      "end": 1128,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 4,
-       "scripts": 0
-      }
-     },
-     {
       "name": "_system_prompt_for_context",
-      "line": 1130,
-      "end": 1131,
+      "line": 1106,
+      "end": 1107,
       "span": 2,
       "args": [
        "self",
@@ -4223,8 +2399,8 @@
      },
      {
       "name": "_facts_system_prompt",
-      "line": 1133,
-      "end": 1134,
+      "line": 1109,
+      "end": 1110,
       "span": 2,
       "args": [
        "self"
@@ -4236,23 +2412,9 @@
       }
      },
      {
-      "name": "_state_system_prompt",
-      "line": 1136,
-      "end": 1137,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
       "name": "_state_system_prompt_for_context",
-      "line": 1139,
-      "end": 1140,
+      "line": 1112,
+      "end": 1113,
       "span": 2,
       "args": [
        "self",
@@ -4265,23 +2427,9 @@
       }
      },
      {
-      "name": "_autonomous_system_prompt",
-      "line": 1142,
-      "end": 1143,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 2,
-       "scripts": 0
-      }
-     },
-     {
       "name": "_autonomous_system_prompt_for_context",
-      "line": 1145,
-      "end": 1146,
+      "line": 1115,
+      "end": 1116,
       "span": 2,
       "args": [
        "self",
@@ -4295,8 +2443,8 @@
      },
      {
       "name": "_structured_parse_cache",
-      "line": 1148,
-      "end": 1153,
+      "line": 1118,
+      "end": 1123,
       "span": 6,
       "args": [
        "self"
@@ -4309,51 +2457,51 @@
      },
      {
       "name": "_structured_parse_key",
-      "line": 1156,
-      "end": 1168,
+      "line": 1126,
+      "end": 1138,
       "span": 13,
       "args": [
        "kwargs"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 1,
        "scripts": 0
       }
      },
      {
       "name": "_is_no_endpoint_not_found",
-      "line": 1171,
-      "end": 1183,
+      "line": 1141,
+      "end": 1153,
       "span": 13,
       "args": [
        "exc"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_request_structured_raw_create",
-      "line": 1185,
-      "end": 1202,
+      "line": 1155,
+      "end": 1172,
       "span": 18,
       "args": [
        "self",
        "kwargs"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_request_structured",
-      "line": 1204,
-      "end": 1285,
+      "line": 1174,
+      "end": 1255,
       "span": 82,
       "args": [
        "self",
@@ -4368,8 +2516,8 @@
      },
      {
       "name": "_request_structured_with_trace",
-      "line": 1287,
-      "end": 1302,
+      "line": 1257,
+      "end": 1272,
       "span": 16,
       "args": [
        "self",
@@ -4384,8 +2532,8 @@
      },
      {
       "name": "_request_bundle",
-      "line": 1304,
-      "end": 1322,
+      "line": 1274,
+      "end": 1292,
       "span": 19,
       "args": [
        "self",
@@ -4402,8 +2550,8 @@
      },
      {
       "name": "_request_state_update",
-      "line": 1324,
-      "end": 1342,
+      "line": 1294,
+      "end": 1312,
       "span": 19,
       "args": [
        "self",
@@ -4420,8 +2568,8 @@
      },
      {
       "name": "_request_autonomous_bundle",
-      "line": 1344,
-      "end": 1360,
+      "line": 1314,
+      "end": 1330,
       "span": 17,
       "args": [
        "self",
@@ -4436,8 +2584,8 @@
      },
      {
       "name": "_request_facts_from_chat",
-      "line": 1362,
-      "end": 1374,
+      "line": 1332,
+      "end": 1344,
       "span": 13,
       "args": [
        "self",
@@ -4452,8 +2600,8 @@
      },
      {
       "name": "_request_facts_from_messages",
-      "line": 1376,
-      "end": 1414,
+      "line": 1346,
+      "end": 1384,
       "span": 39,
       "args": [
        "self",
@@ -4474,8 +2622,8 @@
      },
      {
       "name": "extract_facts_from_evidence_sync",
-      "line": 1416,
-      "end": 1439,
+      "line": 1386,
+      "end": 1409,
       "span": 24,
       "args": [
        "self",
@@ -4484,15 +2632,15 @@
        "participants"
       ],
       "refs": {
-       "src": 3,
+       "src": 2,
        "tests": 3,
        "scripts": 0
       }
      },
      {
       "name": "_request_text",
-      "line": 1441,
-      "end": 1470,
+      "line": 1411,
+      "end": 1440,
       "span": 30,
       "args": [
        "self",
@@ -4507,8 +2655,8 @@
      },
      {
       "name": "_request_text_with_model",
-      "line": 1472,
-      "end": 1507,
+      "line": 1442,
+      "end": 1477,
       "span": 36,
       "args": [
        "self",
@@ -4525,83 +2673,9 @@
       }
      },
      {
-      "name": "_serialize_payload",
-      "line": 1510,
-      "end": 1512,
-      "span": 3,
-      "args": [
-       "payload"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_canonicalize_for_prompt",
-      "line": 1515,
-      "end": 1523,
-      "span": 9,
-      "args": [
-       "cls",
-       "value"
-      ],
-      "refs": {
-       "src": 22,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_stable_participants_payload",
-      "line": 1526,
-      "end": 1535,
-      "span": 10,
-      "args": [
-       "cls",
-       "participants"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_entity_prompt_payload",
-      "line": 1538,
-      "end": 1547,
-      "span": 10,
-      "args": [
-       "cls",
-       "entry"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_stable_entity_list",
-      "line": 1550,
-      "end": 1578,
-      "span": 29,
-      "args": [
-       "cls",
-       "entries"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
       "name": "_format_address_check",
-      "line": 1580,
-      "end": 1588,
+      "line": 1479,
+      "end": 1487,
       "span": 9,
       "args": [
        "self",
@@ -4619,8 +2693,8 @@
      },
      {
       "name": "_format_context",
-      "line": 1590,
-      "end": 1597,
+      "line": 1489,
+      "end": 1496,
       "span": 8,
       "args": [
        "self",
@@ -4637,8 +2711,8 @@
      },
      {
       "name": "_format_facts_context_from_messages",
-      "line": 1599,
-      "end": 1619,
+      "line": 1498,
+      "end": 1518,
       "span": 21,
       "args": [
        "self",
@@ -4658,72 +2732,9 @@
       }
      },
      {
-      "name": "_filter_facts_entities",
-      "line": 1622,
-      "end": 1669,
-      "span": 48,
-      "args": [
-       "cls",
-       "evidence_messages",
-       "participants",
-       "people_facts"
-      ],
-      "refs": {
-       "src": 2,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_minimal_people_fact_profile",
-      "line": 1672,
-      "end": 1690,
-      "span": 19,
-      "args": [
-       "profile",
-       "max_facts"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_profile_mentioned_in_text",
-      "line": 1693,
-      "end": 1698,
-      "span": 6,
-      "args": [
-       "cls",
-       "profile",
-       "text"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_name_mentioned_in_text",
-      "line": 1701,
-      "end": 1717,
-      "span": 17,
-      "args": [
-       "name",
-       "text"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
       "name": "_format_autonomous_context",
-      "line": 1719,
-      "end": 1720,
+      "line": 1520,
+      "end": 1521,
       "span": 2,
       "args": [
        "self",
@@ -4735,34 +2746,6 @@
        "tests": 3,
        "scripts": 0
       }
-     },
-     {
-      "name": "_chat_payload",
-      "line": 1723,
-      "end": 1747,
-      "span": 25,
-      "args": [
-       "chat"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_participant_payload",
-      "line": 1750,
-      "end": 1765,
-      "span": 16,
-      "args": [
-       "participant"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 0,
-       "scripts": 0
-      }
      }
     ]
    }
@@ -4770,8 +2753,8 @@
   "functions": [
    {
     "name": "_field_as_dict",
-    "line": 40,
-    "end": 71,
+    "line": 36,
+    "end": 67,
     "span": 32,
     "args": [
      "value"
@@ -4784,8 +2767,8 @@
    },
    {
     "name": "_field_get",
-    "line": 74,
-    "end": 79,
+    "line": 70,
+    "end": 75,
     "span": 6,
     "args": [
      "value",
@@ -4800,8 +2783,8 @@
    },
    {
     "name": "_to_int",
-    "line": 82,
-    "end": 86,
+    "line": 78,
+    "end": 82,
     "span": 5,
     "args": [
      "value"
@@ -4814,8 +2797,8 @@
    },
    {
     "name": "_to_float",
-    "line": 89,
-    "end": 93,
+    "line": 85,
+    "end": 89,
     "span": 5,
     "args": [
      "value"
@@ -4828,36 +2811,36 @@
    },
    {
     "name": "_coerce_text_content",
-    "line": 96,
-    "end": 119,
+    "line": 92,
+    "end": 115,
     "span": 24,
     "args": [
      "value"
     ],
     "refs": {
-     "src": 16,
+     "src": 6,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_message_content_text",
-    "line": 121,
-    "end": 122,
+    "line": 117,
+    "end": 118,
     "span": 2,
     "args": [
      "message"
     ],
     "refs": {
-     "src": 11,
+     "src": 5,
      "tests": 0,
      "scripts": 3
     }
    },
    {
     "name": "_truncate_text",
-    "line": 125,
-    "end": 130,
+    "line": 121,
+    "end": 126,
     "span": 6,
     "args": [
      "value",
@@ -4871,8 +2854,8 @@
    },
    {
     "name": "_json_safe",
-    "line": 133,
-    "end": 153,
+    "line": 129,
+    "end": 149,
     "span": 21,
     "args": [
      "value",
@@ -4886,8 +2869,8 @@
    },
    {
     "name": "_extract_reasoning_tokens",
-    "line": 156,
-    "end": 166,
+    "line": 152,
+    "end": 162,
     "span": 11,
     "args": [
      "completion"
@@ -4900,8 +2883,8 @@
    },
    {
     "name": "_extract_prompt_cache_usage",
-    "line": 183,
-    "end": 217,
+    "line": 179,
+    "end": 213,
     "span": 35,
     "args": [
      "completion"
@@ -4914,8 +2897,8 @@
    },
    {
     "name": "prompt_cache_stats_snapshot",
-    "line": 279,
-    "end": 280,
+    "line": 275,
+    "end": 276,
     "span": 2,
     "args": [],
     "refs": {
@@ -4926,8 +2909,8 @@
    },
    {
     "name": "log_prompt_cache_summary",
-    "line": 283,
-    "end": 305,
+    "line": 279,
+    "end": 301,
     "span": 23,
     "args": [],
     "refs": {
@@ -4938,8 +2921,8 @@
    },
    {
     "name": "_bundle_from_structured",
-    "line": 1768,
-    "end": 1810,
+    "line": 1523,
+    "end": 1565,
     "span": 43,
     "args": [
      "parsed",
@@ -4947,14 +2930,14 @@
     ],
     "refs": {
      "src": 2,
-     "tests": 14,
+     "tests": 18,
      "scripts": 0
     }
    },
    {
     "name": "_state_update_from_structured",
-    "line": 1813,
-    "end": 1840,
+    "line": 1568,
+    "end": 1595,
     "span": 28,
     "args": [
      "parsed"
@@ -4967,8 +2950,8 @@
    },
    {
     "name": "_facts_from_structured",
-    "line": 1843,
-    "end": 1853,
+    "line": 1598,
+    "end": 1608,
     "span": 11,
     "args": [
      "parsed"
@@ -4981,108 +2964,108 @@
    },
    {
     "name": "_strip_emote_wrapping_asterisks",
-    "line": 1856,
-    "end": 1860,
+    "line": 1611,
+    "end": 1615,
     "span": 5,
     "args": [
      "content"
     ],
     "refs": {
-     "src": 3,
+     "src": 1,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_normalize_text_action_content",
-    "line": 1863,
-    "end": 1867,
+    "line": 1618,
+    "end": 1622,
     "span": 5,
     "args": [
      "command_type",
      "content"
     ],
     "refs": {
-     "src": 5,
+     "src": 2,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_actions_from_structured",
-    "line": 1870,
-    "end": 1897,
+    "line": 1625,
+    "end": 1652,
     "span": 28,
     "args": [
      "action"
     ],
     "refs": {
-     "src": 3,
+     "src": 1,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_command_from_structured",
-    "line": 1900,
-    "end": 1932,
+    "line": 1655,
+    "end": 1687,
     "span": 33,
     "args": [
      "action"
     ],
     "refs": {
-     "src": 3,
+     "src": 1,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_first_chat_text",
-    "line": 1935,
-    "end": 1939,
+    "line": 1690,
+    "end": 1694,
     "span": 5,
     "args": [
      "actions"
     ],
     "refs": {
-     "src": 3,
+     "src": 1,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_normalize_name",
-    "line": 1942,
-    "end": 1946,
+    "line": 1697,
+    "end": 1701,
     "span": 5,
     "args": [
      "name"
     ],
     "refs": {
-     "src": 18,
+     "src": 11,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_name_in_text",
-    "line": 1949,
-    "end": 1958,
+    "line": 1704,
+    "end": 1713,
     "span": 10,
     "args": [
      "name",
      "text"
     ],
     "refs": {
-     "src": 5,
+     "src": 4,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_clean_json",
-    "line": 1961,
-    "end": 1985,
+    "line": 1716,
+    "end": 1740,
     "span": 25,
     "args": [
      "text"
@@ -5095,8 +3078,8 @@
    },
    {
     "name": "_collect_other_names",
-    "line": 1988,
-    "end": 2021,
+    "line": 1743,
+    "end": 1776,
     "span": 34,
     "args": [
      "persona_norm",
@@ -5112,8 +3095,8 @@
    },
    {
     "name": "_parse_bool_response",
-    "line": 2024,
-    "end": 2030,
+    "line": 1779,
+    "end": 1785,
     "span": 7,
     "args": [
      "response"
@@ -5126,28 +3109,28 @@
    },
    {
     "name": "_normalize_autonomy_decision",
-    "line": 2033,
-    "end": 2039,
+    "line": 1788,
+    "end": 1794,
     "span": 7,
     "args": [
      "value"
     ],
     "refs": {
-     "src": 7,
+     "src": 4,
      "tests": 0,
      "scripts": 0
     }
    },
    {
     "name": "_optional_positive_float",
-    "line": 2042,
-    "end": 2049,
+    "line": 1797,
+    "end": 1804,
     "span": 8,
     "args": [
      "value"
     ],
     "refs": {
-     "src": 5,
+     "src": 2,
      "tests": 0,
      "scripts": 0
     }
@@ -5385,7 +3368,7 @@
        "chat"
       ],
       "refs": {
-       "src": 9,
+       "src": 8,
        "tests": 0,
        "scripts": 0
       }
@@ -5429,7 +3412,7 @@
        "participant"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -5443,7 +3426,7 @@
        "payload"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 0,
        "scripts": 0
       }
@@ -5489,7 +3472,7 @@
        "value"
       ],
       "refs": {
-       "src": 22,
+       "src": 17,
        "tests": 0,
        "scripts": 0
       }
@@ -5504,7 +3487,7 @@
        "participants"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 0,
        "scripts": 0
       }
@@ -5519,7 +3502,7 @@
        "entry"
       ],
       "refs": {
-       "src": 7,
+       "src": 5,
        "tests": 0,
        "scripts": 0
       }
@@ -5534,7 +3517,7 @@
        "entries"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 0,
        "scripts": 0
       }
@@ -5685,7 +3668,7 @@
        "people_facts"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -5700,7 +3683,7 @@
        "max_facts"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -5716,7 +3699,7 @@
        "text"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -5731,7 +3714,7 @@
        "text"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 0,
        "scripts": 0
       }
@@ -5745,7 +3728,7 @@
        "name"
       ],
       "refs": {
-       "src": 18,
+       "src": 11,
        "tests": 0,
        "scripts": 0
       }
@@ -5761,7 +3744,7 @@
        "text"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
@@ -5773,8 +3756,8 @@
       "span": 54,
       "args": [],
       "refs": {
-       "src": 10,
-       "tests": 26,
+       "src": 7,
+       "tests": 30,
        "scripts": 7
       }
      },
@@ -5785,7 +3768,7 @@
       "span": 18,
       "args": [],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -5797,8 +3780,8 @@
       "span": 56,
       "args": [],
       "refs": {
-       "src": 2,
-       "tests": 0,
+       "src": 1,
+       "tests": 2,
        "scripts": 0
       }
      },
@@ -5820,429 +3803,9 @@
   "functions": []
  },
  {
-  "file": "src/gpt5_roleplay_system/llm_response_mapper.py",
-  "area": "src",
-  "lines": 197,
-  "imports": [
-   "__future__",
-   "math",
-   "typing",
-   "models"
-  ],
-  "classes": [
-   {
-    "name": "ResponseMapper",
-    "line": 9,
-    "end": 197,
-    "methods": [
-     {
-      "name": "bundle_from_structured",
-      "line": 10,
-      "end": 52,
-      "span": 43,
-      "args": [
-       "self",
-       "parsed",
-       "mode"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 1,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "state_update_from_structured",
-      "line": 54,
-      "end": 82,
-      "span": 29,
-      "args": [
-       "self",
-       "parsed"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "facts_from_structured",
-      "line": 84,
-      "end": 96,
-      "span": 13,
-      "args": [
-       "self",
-       "parsed"
-      ],
-      "refs": {
-       "src": 2,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_actions_from_structured",
-      "line": 98,
-      "end": 124,
-      "span": 27,
-      "args": [
-       "self",
-       "action"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_command_from_structured",
-      "line": 126,
-      "end": 158,
-      "span": 33,
-      "args": [
-       "self",
-       "action"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_first_chat_text",
-      "line": 161,
-      "end": 165,
-      "span": 5,
-      "args": [
-       "actions"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_strip_emote_wrapping_asterisks",
-      "line": 168,
-      "end": 172,
-      "span": 5,
-      "args": [
-       "content"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_text_action_content",
-      "line": 174,
-      "end": 178,
-      "span": 5,
-      "args": [
-       "self",
-       "command_type",
-       "content"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_autonomy_decision",
-      "line": 181,
-      "end": 187,
-      "span": 7,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_optional_positive_float",
-      "line": 190,
-      "end": 197,
-      "span": 8,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     }
-    ]
-   }
-  ],
-  "functions": []
- },
- {
-  "file": "src/gpt5_roleplay_system/llm_structured_parser.py",
-  "area": "src",
-  "lines": 186,
-  "imports": [
-   "__future__",
-   "json",
-   "logging",
-   "re",
-   "typing"
-  ],
-  "classes": [
-   {
-    "name": "StructuredParser",
-    "line": 11,
-    "end": 186,
-    "methods": [
-     {
-      "name": "__init__",
-      "line": 12,
-      "end": 13,
-      "span": 2,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 26,
-       "tests": 112,
-       "scripts": 3
-      }
-     },
-     {
-      "name": "request_structured",
-      "line": 15,
-      "end": 91,
-      "span": 77,
-      "args": [
-       "self",
-       "client",
-       "model_class",
-       "kwargs"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_request_structured_raw_create",
-      "line": 94,
-      "end": 113,
-      "span": 20,
-      "args": [
-       "self",
-       "client",
-       "kwargs"
-      ],
-      "refs": {
-       "src": 5,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_structured_parse_key",
-      "line": 116,
-      "end": 128,
-      "span": 13,
-      "args": [
-       "kwargs"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 1,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_is_no_endpoint_not_found",
-      "line": 131,
-      "end": 143,
-      "span": 13,
-      "args": [
-       "exc"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_message_content_text",
-      "line": 146,
-      "end": 147,
-      "span": 2,
-      "args": [
-       "message"
-      ],
-      "refs": {
-       "src": 11,
-       "tests": 0,
-       "scripts": 3
-      }
-     },
-     {
-      "name": "_coerce_text_content",
-      "line": 150,
-      "end": 173,
-      "span": 24,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 16,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "clean_json",
-      "line": 175,
-      "end": 186,
-      "span": 12,
-      "args": [
-       "self",
-       "text"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 0
-      }
-     }
-    ]
-   }
-  ],
-  "functions": []
- },
- {
-  "file": "src/gpt5_roleplay_system/llm_transport.py",
-  "area": "src",
-  "lines": 130,
-  "imports": [
-   "__future__",
-   "typing"
-  ],
-  "classes": [
-   {
-    "name": "OpenRouterTransport",
-    "line": 6,
-    "end": 130,
-    "methods": [
-     {
-      "name": "__init__",
-      "line": 7,
-      "end": 29,
-      "span": 23,
-      "args": [
-       "self",
-       "client",
-       "reasoning",
-       "provider_order",
-       "provider_allow_fallbacks",
-       "facts_provider_order",
-       "facts_provider_allow_fallbacks"
-      ],
-      "refs": {
-       "src": 26,
-       "tests": 112,
-       "scripts": 3
-      }
-     },
-     {
-      "name": "request_text",
-      "line": 31,
-      "end": 64,
-      "span": 34,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "apply_extra_body",
-      "line": 66,
-      "end": 83,
-      "span": 18,
-      "args": [
-       "self",
-       "kwargs"
-      ],
-      "refs": {
-       "src": 1,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_provider_payload",
-      "line": 85,
-      "end": 100,
-      "span": 16,
-      "args": [
-       "self"
-      ],
-      "refs": {
-       "src": 3,
-       "tests": 0,
-       "scripts": 2
-      }
-     },
-     {
-      "name": "_coerce_text_content",
-      "line": 103,
-      "end": 126,
-      "span": 24,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 16,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_message_content_text",
-      "line": 129,
-      "end": 130,
-      "span": 2,
-      "args": [
-       "cls",
-       "message"
-      ],
-      "refs": {
-       "src": 11,
-       "tests": 0,
-       "scripts": 3
-      }
-     }
-    ]
-   }
-  ],
-  "functions": []
- },
- {
   "file": "src/gpt5_roleplay_system/memory.py",
   "area": "src",
-  "lines": 484,
+  "lines": 470,
   "imports": [
    "__future__",
    "logging",
@@ -6274,7 +3837,7 @@
        "max_items"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -6319,7 +3882,7 @@
        "self"
       ],
       "refs": {
-       "src": 125,
+       "src": 93,
        "tests": 15,
        "scripts": 1
       }
@@ -6333,7 +3896,7 @@
        "self"
       ],
       "refs": {
-       "src": 35,
+       "src": 32,
        "tests": 36,
        "scripts": 11
       }
@@ -6363,7 +3926,7 @@
        "keep_last"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
@@ -6477,7 +4040,7 @@
        "defer_compression"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -6522,7 +4085,7 @@
        "self"
       ],
       "refs": {
-       "src": 40,
+       "src": 38,
        "tests": 54,
        "scripts": 0
       }
@@ -6536,7 +4099,7 @@
        "self"
       ],
       "refs": {
-       "src": 100,
+       "src": 87,
        "tests": 114,
        "scripts": 4
       }
@@ -6550,7 +4113,7 @@
        "self"
       ],
       "refs": {
-       "src": 47,
+       "src": 41,
        "tests": 34,
        "scripts": 0
       }
@@ -6640,7 +4203,7 @@
        "self"
       ],
       "refs": {
-       "src": 35,
+       "src": 32,
        "tests": 36,
        "scripts": 11
       }
@@ -6742,7 +4305,7 @@
        "self"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -6759,7 +4322,7 @@
        "persona_id"
       ],
       "refs": {
-       "src": 50,
+       "src": 39,
        "tests": 9,
        "scripts": 1
       }
@@ -6773,7 +4336,7 @@
        "self"
       ],
       "refs": {
-       "src": 6,
+       "src": 4,
        "tests": 18,
        "scripts": 4
       }
@@ -6805,53 +4368,29 @@
     ]
    },
    {
-    "name": "SimpleSimilaritySearch",
-    "line": 443,
-    "end": 454,
-    "methods": [
-     {
-      "name": "search",
-      "line": 444,
-      "end": 454,
-      "span": 11,
-      "args": [
-       "self",
-       "query",
-       "experiences",
-       "top_k"
-      ],
-      "refs": {
-       "src": 11,
-       "tests": 4,
-       "scripts": 1
-      }
-     }
-    ]
-   },
-   {
     "name": "TokenSimilaritySearch",
-    "line": 457,
-    "end": 476,
+    "line": 443,
+    "end": 462,
     "methods": [
      {
       "name": "__init__",
-      "line": 458,
-      "end": 459,
+      "line": 444,
+      "end": 445,
       "span": 2,
       "args": [
        "self",
        "min_token_len"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
      },
      {
       "name": "search",
-      "line": 461,
-      "end": 476,
+      "line": 447,
+      "end": 462,
       "span": 16,
       "args": [
        "self",
@@ -6871,8 +4410,8 @@
   "functions": [
    {
     "name": "_tokenize",
-    "line": 479,
-    "end": 484,
+    "line": 465,
+    "end": 470,
     "span": 6,
     "args": [
      "text",
@@ -6956,7 +4495,7 @@
      "full_name"
     ],
     "refs": {
-     "src": 28,
+     "src": 18,
      "tests": 2,
      "scripts": 0
     }
@@ -6970,7 +4509,7 @@
      "full_name"
     ],
     "refs": {
-     "src": 10,
+     "src": 7,
      "tests": 4,
      "scripts": 0
     }
@@ -6984,7 +4523,7 @@
      "full_name"
     ],
     "refs": {
-     "src": 7,
+     "src": 4,
      "tests": 4,
      "scripts": 0
     }
@@ -6998,7 +4537,7 @@
      "name"
     ],
     "refs": {
-     "src": 7,
+     "src": 5,
      "tests": 2,
      "scripts": 0
     }
@@ -7012,7 +4551,7 @@
      "name"
     ],
     "refs": {
-     "src": 12,
+     "src": 6,
      "tests": 3,
      "scripts": 0
     }
@@ -7027,7 +4566,7 @@
      "candidate"
     ],
     "refs": {
-     "src": 13,
+     "src": 10,
      "tests": 2,
      "scripts": 0
     }
@@ -7037,10 +4576,11 @@
  {
   "file": "src/gpt5_roleplay_system/neo4j_experience_vector.py",
   "area": "src",
-  "lines": 266,
+  "lines": 279,
   "imports": [
    "__future__",
    "asyncio",
+   "logging",
    "dataclasses",
    "typing",
    "cypher_utils",
@@ -7050,19 +4590,19 @@
   "classes": [
    {
     "name": "Neo4jVectorConfig",
-    "line": 13,
-    "end": 17,
+    "line": 16,
+    "end": 20,
     "methods": []
    },
    {
     "name": "Neo4jExperienceVectorIndex",
-    "line": 20,
-    "end": 235,
+    "line": 23,
+    "end": 248,
     "methods": [
      {
       "name": "__init__",
-      "line": 21,
-      "end": 38,
+      "line": 24,
+      "end": 41,
       "span": 18,
       "args": [
        "self",
@@ -7074,29 +4614,29 @@
        "external_embedder"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
      },
      {
       "name": "is_enabled",
-      "line": 40,
-      "end": 41,
+      "line": 43,
+      "end": 44,
       "span": 2,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 13,
+       "src": 10,
        "tests": 3,
        "scripts": 1
       }
      },
      {
       "name": "add_record_async",
-      "line": 43,
-      "end": 46,
+      "line": 46,
+      "end": 49,
       "span": 4,
       "args": [
        "self",
@@ -7104,15 +4644,15 @@
        "persona_id"
       ],
       "refs": {
-       "src": 5,
+       "src": 3,
        "tests": 3,
        "scripts": 0
       }
      },
      {
       "name": "search",
-      "line": 48,
-      "end": 51,
+      "line": 51,
+      "end": 54,
       "span": 4,
       "args": [
        "self",
@@ -7128,8 +4668,8 @@
      },
      {
       "name": "_session",
-      "line": 53,
-      "end": 54,
+      "line": 56,
+      "end": 57,
       "span": 2,
       "args": [
        "self"
@@ -7142,9 +4682,9 @@
      },
      {
       "name": "_ensure_vector_index",
-      "line": 56,
-      "end": 76,
-      "span": 21,
+      "line": 59,
+      "end": 81,
+      "span": 23,
       "args": [
        "self"
       ],
@@ -7156,9 +4696,9 @@
      },
      {
       "name": "_check_genai_available",
-      "line": 78,
-      "end": 94,
-      "span": 17,
+      "line": 83,
+      "end": 105,
+      "span": 23,
       "args": [
        "self"
       ],
@@ -7170,8 +4710,8 @@
      },
      {
       "name": "_external_available",
-      "line": 96,
-      "end": 97,
+      "line": 107,
+      "end": 108,
       "span": 2,
       "args": [
        "self"
@@ -7184,8 +4724,8 @@
      },
      {
       "name": "_add_record_sync",
-      "line": 99,
-      "end": 104,
+      "line": 110,
+      "end": 115,
       "span": 6,
       "args": [
        "self",
@@ -7200,9 +4740,9 @@
      },
      {
       "name": "_add_with_genai",
-      "line": 106,
-      "end": 142,
-      "span": 37,
+      "line": 117,
+      "end": 154,
+      "span": 38,
       "args": [
        "self",
        "record",
@@ -7216,8 +4756,8 @@
      },
      {
       "name": "_add_with_external_embedder",
-      "line": 144,
-      "end": 175,
+      "line": 156,
+      "end": 187,
       "span": 32,
       "args": [
        "self",
@@ -7232,8 +4772,8 @@
      },
      {
       "name": "_search_sync",
-      "line": 177,
-      "end": 185,
+      "line": 189,
+      "end": 197,
       "span": 9,
       "args": [
        "self",
@@ -7249,9 +4789,9 @@
      },
      {
       "name": "_search_with_genai",
-      "line": 187,
-      "end": 214,
-      "span": 28,
+      "line": 199,
+      "end": 227,
+      "span": 29,
       "args": [
        "self",
        "query",
@@ -7266,8 +4806,8 @@
      },
      {
       "name": "_search_with_embedding",
-      "line": 216,
-      "end": 235,
+      "line": 229,
+      "end": 248,
       "span": 20,
       "args": [
        "self",
@@ -7287,8 +4827,8 @@
   "functions": [
    {
     "name": "_normalize_metadata",
-    "line": 238,
-    "end": 244,
+    "line": 251,
+    "end": 257,
     "span": 7,
     "args": [
      "metadata"
@@ -7301,8 +4841,8 @@
    },
    {
     "name": "_records_from_query",
-    "line": 247,
-    "end": 266,
+    "line": 260,
+    "end": 279,
     "span": 20,
     "args": [
      "records"
@@ -7356,7 +4896,7 @@
        "user_ids"
       ],
       "refs": {
-       "src": 8,
+       "src": 6,
        "tests": 4,
        "scripts": 0
       }
@@ -7417,7 +4957,7 @@
        "facts"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 14,
        "scripts": 0
       }
@@ -7451,7 +4991,7 @@
        "timestamp"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 3,
        "scripts": 0
       }
@@ -7472,7 +5012,7 @@
        "self"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -7502,7 +5042,7 @@
        "user_ids"
       ],
       "refs": {
-       "src": 8,
+       "src": 6,
        "tests": 4,
        "scripts": 0
       }
@@ -7563,7 +5103,7 @@
        "facts"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 14,
        "scripts": 0
       }
@@ -7597,7 +5137,7 @@
        "timestamp"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 3,
        "scripts": 0
       }
@@ -7622,7 +5162,7 @@
        "database"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -7679,7 +5219,7 @@
        "user_ids"
       ],
       "refs": {
-       "src": 8,
+       "src": 6,
        "tests": 4,
        "scripts": 0
       }
@@ -7755,7 +5295,7 @@
        "facts"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 14,
        "scripts": 0
       }
@@ -7789,7 +5329,7 @@
        "timestamp"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 3,
        "scripts": 0
       }
@@ -7954,7 +5494,7 @@
        "self"
       ],
       "refs": {
-       "src": 15,
+       "src": 14,
        "tests": 5,
        "scripts": 11
       }
@@ -7972,7 +5512,7 @@
      "items"
     ],
     "refs": {
-     "src": 15,
+     "src": 11,
      "tests": 0,
      "scripts": 0
     }
@@ -7986,7 +5526,7 @@
      "text"
     ],
     "refs": {
-     "src": 15,
+     "src": 8,
      "tests": 0,
      "scripts": 0
     }
@@ -8034,7 +5574,7 @@
        "payload"
       ],
       "refs": {
-       "src": 21,
+       "src": 18,
        "tests": 3,
        "scripts": 0
       }
@@ -8087,7 +5627,7 @@
        "payload"
       ],
       "refs": {
-       "src": 21,
+       "src": 18,
        "tests": 3,
        "scripts": 0
       }
@@ -8123,7 +5663,7 @@
        "project"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -8155,7 +5695,7 @@
        "payload"
       ],
       "refs": {
-       "src": 21,
+       "src": 18,
        "tests": 3,
        "scripts": 0
       }
@@ -8233,7 +5773,7 @@
      "name"
     ],
     "refs": {
-     "src": 11,
+     "src": 9,
      "tests": 0,
      "scripts": 0
     }
@@ -8261,7 +5801,7 @@
      "participants"
     ],
     "refs": {
-     "src": 6,
+     "src": 4,
      "tests": 0,
      "scripts": 0
     }
@@ -8553,7 +6093,7 @@
  {
   "file": "src/gpt5_roleplay_system/pipeline.py",
   "area": "src",
-  "lines": 3200,
+  "lines": 3119,
   "imports": [
    "__future__",
    "asyncio",
@@ -8570,11 +6110,7 @@
    "memory",
    "models",
    "time_utils",
-   "autonomy_manager",
    "background",
-   "context_builder",
-   "episode_manager",
-   "fact_manager",
    "pipeline_state",
    "name_utils",
    "payload_contract",
@@ -8584,27 +6120,27 @@
   "classes": [
    {
     "name": "ExperienceIndexProtocol",
-    "line": 73,
-    "end": 81,
+    "line": 69,
+    "end": 77,
     "methods": [
      {
       "name": "is_enabled",
-      "line": 74,
-      "end": 75,
+      "line": 70,
+      "end": 71,
       "span": 2,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 13,
+       "src": 10,
        "tests": 3,
        "scripts": 1
       }
      },
      {
       "name": "add_record_async",
-      "line": 77,
-      "end": 78,
+      "line": 73,
+      "end": 74,
       "span": 2,
       "args": [
        "self",
@@ -8612,15 +6148,15 @@
        "persona_id"
       ],
       "refs": {
-       "src": 5,
+       "src": 3,
        "tests": 3,
        "scripts": 0
       }
      },
      {
       "name": "search",
-      "line": 80,
-      "end": 81,
+      "line": 76,
+      "end": 77,
       "span": 2,
       "args": [
        "self",
@@ -8638,14 +6174,14 @@
    },
    {
     "name": "MessagePipeline",
-    "line": 84,
-    "end": 3200,
+    "line": 80,
+    "end": 3119,
     "methods": [
      {
       "name": "__init__",
-      "line": 85,
-      "end": 244,
-      "span": 160,
+      "line": 81,
+      "end": 200,
+      "span": 120,
       "args": [
        "self",
        "persona",
@@ -8673,130 +6209,130 @@
        "persona_profiles"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
      },
      {
       "name": "snapshot_state",
-      "line": 246,
-      "end": 275,
+      "line": 202,
+      "end": 231,
       "span": 30,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 7,
+       "src": 3,
        "tests": 3,
        "scripts": 0
       }
      },
      {
       "name": "restore_state",
-      "line": 277,
-      "end": 398,
+      "line": 233,
+      "end": 354,
       "span": 122,
       "args": [
        "self",
        "state"
       ],
       "refs": {
-       "src": 6,
+       "src": 2,
        "tests": 3,
        "scripts": 0
       }
      },
      {
       "name": "_snapshot_facts_state",
-      "line": 400,
-      "end": 413,
+      "line": 356,
+      "end": 369,
       "span": 14,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_restore_facts_state",
-      "line": 415,
-      "end": 457,
+      "line": 371,
+      "end": 413,
       "span": 43,
       "args": [
        "self",
        "state"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_recover_pending_facts_from_memory",
-      "line": 459,
-      "end": 470,
+      "line": 415,
+      "end": 426,
       "span": 12,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_serialize_inbound_chat_state",
-      "line": 473,
-      "end": 481,
+      "line": 429,
+      "end": 437,
       "span": 9,
       "args": [
        "chat"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_deserialize_inbound_chat_state",
-      "line": 484,
-      "end": 494,
+      "line": 440,
+      "end": 450,
       "span": 11,
       "args": [
        "raw"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "update_environment",
-      "line": 496,
-      "end": 547,
+      "line": 452,
+      "end": 503,
       "span": 52,
       "args": [
        "self",
        "data"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 15,
        "scripts": 0
       }
      },
      {
       "name": "set_persona",
-      "line": 549,
-      "end": 552,
+      "line": 505,
+      "end": 508,
       "span": 4,
       "args": [
        "self",
@@ -8810,24 +6346,24 @@
      },
      {
       "name": "upsert_persona_profile",
-      "line": 554,
-      "end": 560,
-      "span": 7,
+      "line": 510,
+      "end": 515,
+      "span": 6,
       "args": [
        "self",
        "persona",
        "instructions"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "set_user_id",
-      "line": 562,
-      "end": 565,
+      "line": 517,
+      "end": 520,
       "span": 4,
       "args": [
        "self",
@@ -8841,8 +6377,8 @@
      },
      {
       "name": "set_llm_chat_enabled",
-      "line": 567,
-      "end": 569,
+      "line": 522,
+      "end": 524,
       "span": 3,
       "args": [
        "self",
@@ -8856,8 +6392,8 @@
      },
      {
       "name": "llm_chat_enabled",
-      "line": 571,
-      "end": 572,
+      "line": 526,
+      "end": 527,
       "span": 2,
       "args": [
        "self"
@@ -8870,22 +6406,22 @@
      },
      {
       "name": "user_id",
-      "line": 574,
-      "end": 575,
+      "line": 529,
+      "end": 530,
       "span": 2,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 481,
+       "src": 355,
        "tests": 182,
        "scripts": 9
       }
      },
      {
       "name": "process_chat",
-      "line": 577,
-      "end": 578,
+      "line": 532,
+      "end": 533,
       "span": 2,
       "args": [
        "self",
@@ -8899,9 +6435,9 @@
      },
      {
       "name": "process_chat_batch",
-      "line": 580,
-      "end": 724,
-      "span": 145,
+      "line": 535,
+      "end": 678,
+      "span": 144,
       "args": [
        "self",
        "batch"
@@ -8914,8 +6450,8 @@
      },
      {
       "name": "_apply_overflow_summary",
-      "line": 726,
-      "end": 773,
+      "line": 680,
+      "end": 727,
       "span": 48,
       "args": [
        "self",
@@ -8931,53 +6467,53 @@
      },
      {
       "name": "_build_chat",
-      "line": 775,
-      "end": 802,
+      "line": 729,
+      "end": 756,
       "span": 28,
       "args": [
        "self",
        "data"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_resolve_participants",
-      "line": 804,
-      "end": 850,
+      "line": 758,
+      "end": 804,
       "span": 47,
       "args": [
        "self",
        "chat"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_merge_participants",
-      "line": 852,
-      "end": 858,
+      "line": 806,
+      "end": 812,
       "span": 7,
       "args": [
        "self",
        "chats"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_build_context",
-      "line": 860,
-      "end": 1016,
+      "line": 814,
+      "end": 970,
       "span": 157,
       "args": [
        "self",
@@ -8993,23 +6529,23 @@
      },
      {
       "name": "_collapse_batch",
-      "line": 1018,
-      "end": 1057,
+      "line": 972,
+      "end": 1011,
       "span": 40,
       "args": [
        "self",
        "chats"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_handle_self_message",
-      "line": 1059,
-      "end": 1067,
+      "line": 1013,
+      "end": 1021,
       "span": 9,
       "args": [
        "self",
@@ -9023,8 +6559,8 @@
      },
      {
       "name": "_is_duplicate_ai_text",
-      "line": 1069,
-      "end": 1080,
+      "line": 1023,
+      "end": 1034,
       "span": 12,
       "args": [
        "self",
@@ -9038,38 +6574,38 @@
      },
      {
       "name": "_is_self_message",
-      "line": 1082,
-      "end": 1092,
+      "line": 1036,
+      "end": 1046,
       "span": 11,
       "args": [
        "self",
        "chat"
       ],
       "refs": {
-       "src": 6,
+       "src": 4,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_chat_full_name",
-      "line": 1094,
-      "end": 1101,
+      "line": 1048,
+      "end": 1055,
       "span": 8,
       "args": [
        "self",
        "chat"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_self_name_candidates",
-      "line": 1103,
-      "end": 1127,
+      "line": 1057,
+      "end": 1081,
       "span": 25,
       "args": [
        "self",
@@ -9083,8 +6619,8 @@
      },
      {
       "name": "_maybe_promote_self_user_id",
-      "line": 1129,
-      "end": 1138,
+      "line": 1083,
+      "end": 1092,
       "span": 10,
       "args": [
        "self",
@@ -9098,8 +6634,8 @@
      },
      {
       "name": "_self_sender_id_for_payload",
-      "line": 1140,
-      "end": 1144,
+      "line": 1094,
+      "end": 1098,
       "span": 5,
       "args": [
        "self"
@@ -9112,8 +6648,8 @@
      },
      {
       "name": "_is_ignored_user_id",
-      "line": 1147,
-      "end": 1148,
+      "line": 1101,
+      "end": 1102,
       "span": 2,
       "args": [
        "user_id"
@@ -9126,8 +6662,8 @@
      },
      {
       "name": "_is_ignored_message",
-      "line": 1150,
-      "end": 1151,
+      "line": 1104,
+      "end": 1105,
       "span": 2,
       "args": [
        "self",
@@ -9141,54 +6677,10 @@
      },
      {
       "name": "_normalize_name",
-      "line": 1154,
-      "end": 1155,
+      "line": 1108,
+      "end": 1109,
       "span": 2,
       "args": [
-       "name"
-      ],
-      "refs": {
-       "src": 18,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_name_for_match",
-      "line": 1158,
-      "end": 1159,
-      "span": 2,
-      "args": [
-       "name"
-      ],
-      "refs": {
-       "src": 18,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_name_key",
-      "line": 1161,
-      "end": 1168,
-      "span": 8,
-      "args": [
-       "self",
-       "name"
-      ],
-      "refs": {
-       "src": 12,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_canonical_name",
-      "line": 1171,
-      "end": 1179,
-      "span": 9,
-      "args": [
-       "user_id",
        "name"
       ],
       "refs": {
@@ -9198,37 +6690,81 @@
       }
      },
      {
+      "name": "_normalize_name_for_match",
+      "line": 1112,
+      "end": 1113,
+      "span": 2,
+      "args": [
+       "name"
+      ],
+      "refs": {
+       "src": 9,
+       "tests": 0,
+       "scripts": 0
+      }
+     },
+     {
+      "name": "_name_key",
+      "line": 1115,
+      "end": 1122,
+      "span": 8,
+      "args": [
+       "self",
+       "name"
+      ],
+      "refs": {
+       "src": 7,
+       "tests": 0,
+       "scripts": 0
+      }
+     },
+     {
+      "name": "_canonical_name",
+      "line": 1125,
+      "end": 1133,
+      "span": 9,
+      "args": [
+       "user_id",
+       "name"
+      ],
+      "refs": {
+       "src": 6,
+       "tests": 0,
+       "scripts": 0
+      }
+     },
+     {
       "name": "_dedupe_preserve_order",
-      "line": 1182,
-      "end": 1191,
+      "line": 1136,
+      "end": 1145,
       "span": 10,
       "args": [
        "items"
       ],
       "refs": {
-       "src": 15,
+       "src": 11,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_normalize_fact_key",
-      "line": 1194,
-      "end": 1199,
+      "line": 1148,
+      "end": 1153,
       "span": 6,
       "args": [
        "text"
       ],
       "refs": {
-       "src": 15,
+       "src": 8,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_fact_tokens",
-      "line": 1202,
-      "end": 1209,
+      "line": 1156,
+      "end": 1163,
       "span": 8,
       "args": [
        "text",
@@ -9242,8 +6778,8 @@
      },
      {
       "name": "_fact_similarity",
-      "line": 1212,
-      "end": 1219,
+      "line": 1166,
+      "end": 1173,
       "span": 8,
       "args": [
        "tokens_a",
@@ -9257,8 +6793,8 @@
      },
      {
       "name": "_is_near_duplicate",
-      "line": 1222,
-      "end": 1232,
+      "line": 1176,
+      "end": 1186,
       "span": 11,
       "args": [
        "candidate_tokens",
@@ -9273,23 +6809,23 @@
      },
      {
       "name": "_people_facts_for_participants",
-      "line": 1234,
-      "end": 1266,
+      "line": 1188,
+      "end": 1220,
       "span": 33,
       "args": [
        "self",
        "participants"
       ],
       "refs": {
-       "src": 4,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_record_display_name",
-      "line": 1268,
-      "end": 1282,
+      "line": 1222,
+      "end": 1236,
       "span": 15,
       "args": [
        "self",
@@ -9297,15 +6833,15 @@
        "full_name"
       ],
       "refs": {
-       "src": 18,
+       "src": 10,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_full_name_for",
-      "line": 1284,
-      "end": 1287,
+      "line": 1238,
+      "end": 1241,
       "span": 4,
       "args": [
        "self",
@@ -9313,15 +6849,15 @@
        "fallback_name"
       ],
       "refs": {
-       "src": 13,
+       "src": 7,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_clean_name_candidate",
-      "line": 1290,
-      "end": 1294,
+      "line": 1244,
+      "end": 1248,
       "span": 5,
       "args": [
        "value"
@@ -9334,8 +6870,8 @@
      },
      {
       "name": "_best_available_sender_full_name",
-      "line": 1296,
-      "end": 1339,
+      "line": 1250,
+      "end": 1293,
       "span": 44,
       "args": [
        "self",
@@ -9350,23 +6886,23 @@
      },
      {
       "name": "_participant_payload",
-      "line": 1341,
-      "end": 1352,
+      "line": 1295,
+      "end": 1306,
       "span": 12,
       "args": [
        "self",
        "participant"
       ],
       "refs": {
-       "src": 4,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_normalize_participants",
-      "line": 1354,
-      "end": 1371,
+      "line": 1308,
+      "end": 1325,
       "span": 18,
       "args": [
        "self",
@@ -9380,8 +6916,8 @@
      },
      {
       "name": "_select_primary_incoming_chat",
-      "line": 1374,
-      "end": 1385,
+      "line": 1328,
+      "end": 1339,
       "span": 12,
       "args": [
        "chats"
@@ -9394,8 +6930,8 @@
      },
      {
       "name": "_enforce_summary_before_recent",
-      "line": 1387,
-      "end": 1421,
+      "line": 1341,
+      "end": 1375,
       "span": 35,
       "args": [
        "self"
@@ -9408,8 +6944,8 @@
      },
      {
       "name": "_check_payload_contract",
-      "line": 1423,
-      "end": 1441,
+      "line": 1377,
+      "end": 1395,
       "span": 19,
       "args": [
        "self"
@@ -9422,8 +6958,8 @@
      },
      {
       "name": "_update_last_seen_cache_from_agents",
-      "line": 1443,
-      "end": 1456,
+      "line": 1397,
+      "end": 1410,
       "span": 14,
       "args": [
        "self",
@@ -9431,15 +6967,15 @@
        "timestamp"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_update_reappearance_signals_from_agents",
-      "line": 1458,
-      "end": 1489,
+      "line": 1412,
+      "end": 1443,
       "span": 32,
       "args": [
        "self",
@@ -9455,8 +6991,8 @@
      },
      {
       "name": "_prune_reappearance_signals",
-      "line": 1491,
-      "end": 1495,
+      "line": 1445,
+      "end": 1449,
       "span": 5,
       "args": [
        "self",
@@ -9471,8 +7007,8 @@
      },
      {
       "name": "_active_reappearance_signal",
-      "line": 1497,
-      "end": 1506,
+      "line": 1451,
+      "end": 1460,
       "span": 10,
       "args": [
        "self",
@@ -9487,8 +7023,8 @@
      },
      {
       "name": "_update_last_seen_from_agents",
-      "line": 1508,
-      "end": 1526,
+      "line": 1462,
+      "end": 1480,
       "span": 19,
       "args": [
        "self",
@@ -9496,15 +7032,15 @@
        "timestamp"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_schedule_update_last_seen_from_agents",
-      "line": 1528,
-      "end": 1539,
+      "line": 1482,
+      "end": 1493,
       "span": 12,
       "args": [
        "self",
@@ -9512,30 +7048,30 @@
        "timestamp"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_memory_items_to_chats",
-      "line": 1541,
-      "end": 1575,
+      "line": 1495,
+      "end": 1529,
       "span": 35,
       "args": [
        "self",
        "items"
       ],
       "refs": {
-       "src": 8,
+       "src": 4,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_filter_overflow_against_summary",
-      "line": 1577,
-      "end": 1606,
+      "line": 1531,
+      "end": 1560,
       "span": 30,
       "args": [
        "self",
@@ -9549,60 +7085,12 @@
      },
      {
       "name": "_chat_payload",
-      "line": 1608,
-      "end": 1644,
+      "line": 1562,
+      "end": 1598,
       "span": 37,
       "args": [
        "self",
        "chat"
-      ],
-      "refs": {
-       "src": 4,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_participant_key",
-      "line": 1646,
-      "end": 1650,
-      "span": 5,
-      "args": [
-       "self",
-       "user_id",
-       "name"
-      ],
-      "refs": {
-       "src": 12,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_participants_from_messages",
-      "line": 1652,
-      "end": 1680,
-      "span": 29,
-      "args": [
-       "self",
-       "messages",
-       "base_participants"
-      ],
-      "refs": {
-       "src": 8,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_facts_context",
-      "line": 1682,
-      "end": 1696,
-      "span": 15,
-      "args": [
-       "self",
-       "participants",
-       "evidence_messages"
       ],
       "refs": {
        "src": 3,
@@ -9611,9 +7099,57 @@
       }
      },
      {
+      "name": "_participant_key",
+      "line": 1600,
+      "end": 1604,
+      "span": 5,
+      "args": [
+       "self",
+       "user_id",
+       "name"
+      ],
+      "refs": {
+       "src": 6,
+       "tests": 0,
+       "scripts": 0
+      }
+     },
+     {
+      "name": "_participants_from_messages",
+      "line": 1606,
+      "end": 1634,
+      "span": 29,
+      "args": [
+       "self",
+       "messages",
+       "base_participants"
+      ],
+      "refs": {
+       "src": 6,
+       "tests": 0,
+       "scripts": 0
+      }
+     },
+     {
+      "name": "_facts_context",
+      "line": 1636,
+      "end": 1650,
+      "span": 15,
+      "args": [
+       "self",
+       "participants",
+       "evidence_messages"
+      ],
+      "refs": {
+       "src": 1,
+       "tests": 0,
+       "scripts": 0
+      }
+     },
+     {
       "name": "_maybe_schedule_fact_sweep",
-      "line": 1698,
-      "end": 1713,
+      "line": 1652,
+      "end": 1667,
       "span": 16,
       "args": [
        "self",
@@ -9629,8 +7165,8 @@
      },
      {
       "name": "_enqueue_fact_messages",
-      "line": 1715,
-      "end": 1756,
+      "line": 1669,
+      "end": 1710,
       "span": 42,
       "args": [
        "self",
@@ -9638,15 +7174,15 @@
        "participants"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 7,
        "scripts": 0
       }
      },
      {
       "name": "_mark_facts_swept",
-      "line": 1758,
-      "end": 1765,
+      "line": 1712,
+      "end": 1719,
       "span": 8,
       "args": [
        "self",
@@ -9660,38 +7196,38 @@
      },
      {
       "name": "_fact_message_key",
-      "line": 1767,
-      "end": 1772,
+      "line": 1721,
+      "end": 1726,
       "span": 6,
       "args": [
        "self",
        "message"
       ],
       "refs": {
-       "src": 8,
+       "src": 4,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_facts_pending_age_seconds",
-      "line": 1774,
-      "end": 1778,
+      "line": 1728,
+      "end": 1732,
       "span": 5,
       "args": [
        "self",
        "now"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_fact_flush_reason",
-      "line": 1780,
-      "end": 1792,
+      "line": 1734,
+      "end": 1746,
       "span": 13,
       "args": [
        "self",
@@ -9699,30 +7235,30 @@
        "overflow_present"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_maybe_start_facts_worker",
-      "line": 1794,
-      "end": 1825,
+      "line": 1748,
+      "end": 1779,
       "span": 32,
       "args": [
        "self",
        "overflow_present"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 8,
        "scripts": 0
       }
      },
      {
       "name": "_facts_worker",
-      "line": 1827,
-      "end": 1895,
+      "line": 1781,
+      "end": 1849,
       "span": 69,
       "args": [
        "self",
@@ -9733,15 +7269,15 @@
        "pending_age_seconds"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_requeue_fact_evidence",
-      "line": 1897,
-      "end": 1932,
+      "line": 1851,
+      "end": 1886,
       "span": 36,
       "args": [
        "self",
@@ -9756,8 +7292,8 @@
      },
      {
       "name": "_extract_and_store_facts",
-      "line": 1934,
-      "end": 1965,
+      "line": 1888,
+      "end": 1919,
       "span": 32,
       "args": [
        "self",
@@ -9765,15 +7301,15 @@
        "participants"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_store_facts",
-      "line": 1967,
-      "end": 2020,
+      "line": 1921,
+      "end": 1974,
       "span": 54,
       "args": [
        "self",
@@ -9781,15 +7317,15 @@
        "participants"
       ],
       "refs": {
-       "src": 4,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_schedule_store_facts",
-      "line": 2022,
-      "end": 2028,
+      "line": 1976,
+      "end": 1982,
       "span": 7,
       "args": [
        "self",
@@ -9804,8 +7340,8 @@
      },
      {
       "name": "_update_participant_hints",
-      "line": 2030,
-      "end": 2047,
+      "line": 1984,
+      "end": 2001,
       "span": 18,
       "args": [
        "self",
@@ -9819,8 +7355,8 @@
      },
      {
       "name": "_is_self_participant",
-      "line": 2049,
-      "end": 2054,
+      "line": 2003,
+      "end": 2008,
       "span": 6,
       "args": [
        "self",
@@ -9828,45 +7364,45 @@
        "name"
       ],
       "refs": {
-       "src": 22,
+       "src": 14,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "seconds_since_activity",
-      "line": 2056,
-      "end": 2059,
+      "line": 2010,
+      "end": 2013,
       "span": 4,
       "args": [
        "self",
        "now"
       ],
       "refs": {
-       "src": 15,
+       "src": 11,
        "tests": 9,
        "scripts": 0
       }
      },
      {
       "name": "activity_snapshot",
-      "line": 2061,
-      "end": 2077,
+      "line": 2015,
+      "end": 2031,
       "span": 17,
       "args": [
        "self",
        "recent_activity_window_seconds"
       ],
       "refs": {
-       "src": 6,
+       "src": 5,
        "tests": 6,
        "scripts": 0
       }
      },
      {
       "name": "consume_autonomy_delay_hint_seconds",
-      "line": 2079,
-      "end": 2082,
+      "line": 2033,
+      "end": 2036,
       "span": 4,
       "args": [
        "self"
@@ -9879,8 +7415,8 @@
      },
      {
       "name": "_effective_posture_is_sitting",
-      "line": 2084,
-      "end": 2093,
+      "line": 2038,
+      "end": 2047,
       "span": 10,
       "args": [
        "self",
@@ -9894,23 +7430,23 @@
      },
      {
       "name": "_agent_state",
-      "line": 2095,
-      "end": 2115,
+      "line": 2049,
+      "end": 2069,
       "span": 21,
       "args": [
        "self",
        "now_ts"
       ],
       "refs": {
-       "src": 4,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_update_mood_and_status",
-      "line": 2117,
-      "end": 2129,
+      "line": 2071,
+      "end": 2083,
       "span": 13,
       "args": [
        "self",
@@ -9925,51 +7461,51 @@
      },
      {
       "name": "_clean_optional_text",
-      "line": 2132,
-      "end": 2136,
+      "line": 2086,
+      "end": 2090,
       "span": 5,
       "args": [
        "value"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_derive_status_from_actions",
-      "line": 2138,
-      "end": 2143,
+      "line": 2092,
+      "end": 2097,
       "span": 6,
       "args": [
        "self",
        "bundle"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_status_from_command",
-      "line": 2146,
-      "end": 2161,
+      "line": 2100,
+      "end": 2115,
       "span": 16,
       "args": [
        "command_type"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_chat_texts_from_actions",
-      "line": 2163,
-      "end": 2172,
+      "line": 2117,
+      "end": 2126,
       "span": 10,
       "args": [
        "self",
@@ -9983,8 +7519,8 @@
      },
      {
       "name": "_filter_autonomous_actions",
-      "line": 2174,
-      "end": 2208,
+      "line": 2128,
+      "end": 2162,
       "span": 35,
       "args": [
        "self",
@@ -9999,9 +7535,9 @@
      },
      {
       "name": "generate_autonomous_actions",
-      "line": 2210,
-      "end": 2253,
-      "span": 44,
+      "line": 2164,
+      "end": 2206,
+      "span": 43,
       "args": [
        "self",
        "recent_activity_window_seconds"
@@ -10014,40 +7550,26 @@
      },
      {
       "name": "_sanitize_autonomy_delay_hint",
-      "line": 2256,
-      "end": 2263,
+      "line": 2209,
+      "end": 2216,
       "span": 8,
       "args": [
        "value"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 1,
        "scripts": 0
       }
      },
      {
       "name": "_normalize_autonomy_decision",
-      "line": 2266,
-      "end": 2275,
+      "line": 2219,
+      "end": 2228,
       "span": 10,
       "args": [
        "value",
        "has_actions"
-      ],
-      "refs": {
-       "src": 7,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
-      "name": "_normalize_autonomy_decision_value",
-      "line": 2278,
-      "end": 2284,
-      "span": 7,
-      "args": [
-       "value"
       ],
       "refs": {
        "src": 4,
@@ -10056,9 +7578,23 @@
       }
      },
      {
+      "name": "_normalize_autonomy_decision_value",
+      "line": 2231,
+      "end": 2237,
+      "span": 7,
+      "args": [
+       "value"
+      ],
+      "refs": {
+       "src": 1,
+       "tests": 0,
+       "scripts": 0
+      }
+     },
+     {
       "name": "_apply_autonomy_scheduler_override_from_incoming",
-      "line": 2286,
-      "end": 2302,
+      "line": 2239,
+      "end": 2255,
       "span": 17,
       "args": [
        "self",
@@ -10073,22 +7609,22 @@
      },
      {
       "name": "_participants_for_autonomy",
-      "line": 2304,
-      "end": 2325,
+      "line": 2257,
+      "end": 2278,
       "span": 22,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 2,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_autonomy_query_text",
-      "line": 2327,
-      "end": 2334,
+      "line": 2280,
+      "end": 2287,
       "span": 8,
       "args": [
        "self"
@@ -10101,8 +7637,8 @@
      },
      {
       "name": "_schedule_episode_check",
-      "line": 2336,
-      "end": 2341,
+      "line": 2289,
+      "end": 2294,
       "span": 6,
       "args": [
        "self"
@@ -10115,8 +7651,8 @@
      },
      {
       "name": "_maybe_finalize_episode",
-      "line": 2343,
-      "end": 2397,
+      "line": 2296,
+      "end": 2350,
       "span": 55,
       "args": [
        "self"
@@ -10129,8 +7665,8 @@
      },
      {
       "name": "_mark_episode_covered",
-      "line": 2399,
-      "end": 2407,
+      "line": 2352,
+      "end": 2360,
       "span": 9,
       "args": [
        "self",
@@ -10144,38 +7680,38 @@
      },
      {
       "name": "_summarize_episode",
-      "line": 2409,
-      "end": 2433,
+      "line": 2362,
+      "end": 2386,
       "span": 25,
       "args": [
        "self",
        "items"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_episode_metadata",
-      "line": 2436,
-      "end": 2462,
+      "line": 2389,
+      "end": 2415,
       "span": 27,
       "args": [
        "items",
        "reason"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_latest_timestamp",
-      "line": 2464,
-      "end": 2476,
+      "line": 2417,
+      "end": 2429,
       "span": 13,
       "args": [
        "self"
@@ -10188,22 +7724,22 @@
      },
      {
       "name": "_entity_prompt_payload",
-      "line": 2479,
-      "end": 2487,
+      "line": 2432,
+      "end": 2440,
       "span": 9,
       "args": [
        "entry"
       ],
       "refs": {
-       "src": 7,
+       "src": 5,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_environment_payload",
-      "line": 2489,
-      "end": 2502,
+      "line": 2442,
+      "end": 2455,
       "span": 14,
       "args": [
        "self",
@@ -10217,8 +7753,8 @@
      },
      {
       "name": "_bundle_prompt_payload",
-      "line": 2504,
-      "end": 2580,
+      "line": 2457,
+      "end": 2533,
       "span": 77,
       "args": [
        "self",
@@ -10235,8 +7771,8 @@
      },
      {
       "name": "_summary_meta_for_payload",
-      "line": 2583,
-      "end": 2609,
+      "line": 2536,
+      "end": 2562,
       "span": 27,
       "args": [],
       "refs": {
@@ -10247,8 +7783,8 @@
      },
      {
       "name": "_incoming_payload_from_batch_entry",
-      "line": 2612,
-      "end": 2632,
+      "line": 2565,
+      "end": 2585,
       "span": 21,
       "args": [
        "entry"
@@ -10261,22 +7797,22 @@
      },
      {
       "name": "_persona_instructions",
-      "line": 2634,
-      "end": 2638,
+      "line": 2587,
+      "end": 2591,
       "span": 5,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_log_reasoning_trace",
-      "line": 2640,
-      "end": 2643,
+      "line": 2593,
+      "end": 2596,
       "span": 4,
       "args": [
        "self",
@@ -10291,8 +7827,8 @@
      },
      {
       "name": "_log_quality_fallbacks",
-      "line": 2645,
-      "end": 2651,
+      "line": 2598,
+      "end": 2604,
       "span": 7,
       "args": [
        "self"
@@ -10305,8 +7841,8 @@
      },
      {
       "name": "_bundle_response_payload",
-      "line": 2654,
-      "end": 2679,
+      "line": 2607,
+      "end": 2632,
       "span": 26,
       "args": [
        "bundle"
@@ -10318,23 +7854,9 @@
       }
      },
      {
-      "name": "_state_update_payload",
-      "line": 2682,
-      "end": 2697,
-      "span": 16,
-      "args": [
-       "update"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
       "name": "_partial_name_tokens",
-      "line": 2700,
-      "end": 2715,
+      "line": 2635,
+      "end": 2650,
       "span": 16,
       "args": [
        "name"
@@ -10347,8 +7869,8 @@
      },
      {
       "name": "_mark_mention_index_dirty",
-      "line": 2717,
-      "end": 2718,
+      "line": 2652,
+      "end": 2653,
       "span": 2,
       "args": [
        "self"
@@ -10361,8 +7883,8 @@
      },
      {
       "name": "_remember_runtime_mention_name",
-      "line": 2720,
-      "end": 2736,
+      "line": 2655,
+      "end": 2671,
       "span": 17,
       "args": [
        "self",
@@ -10377,8 +7899,8 @@
      },
      {
       "name": "_normalize_mention_phrase",
-      "line": 2739,
-      "end": 2742,
+      "line": 2674,
+      "end": 2677,
       "span": 4,
       "args": [
        "text"
@@ -10391,8 +7913,8 @@
      },
      {
       "name": "_mention_name_variants",
-      "line": 2745,
-      "end": 2778,
+      "line": 2680,
+      "end": 2713,
       "span": 34,
       "args": [
        "cls",
@@ -10406,8 +7928,8 @@
      },
      {
       "name": "_refresh_mention_index_if_needed",
-      "line": 2780,
-      "end": 2824,
+      "line": 2715,
+      "end": 2759,
       "span": 45,
       "args": [
        "self",
@@ -10421,8 +7943,8 @@
      },
      {
       "name": "_resolve_text_mentions",
-      "line": 2826,
-      "end": 2864,
+      "line": 2761,
+      "end": 2799,
       "span": 39,
       "args": [
        "self",
@@ -10435,23 +7957,9 @@
       }
      },
      {
-      "name": "_looks_like_uuid",
-      "line": 2867,
-      "end": 2880,
-      "span": 14,
-      "args": [
-       "value"
-      ],
-      "refs": {
-       "src": 0,
-       "tests": 0,
-       "scripts": 0
-      }
-     },
-     {
       "name": "_merge_related_experiences",
-      "line": 2883,
-      "end": 2910,
+      "line": 2802,
+      "end": 2829,
       "span": 28,
       "args": [
        "primary",
@@ -10466,52 +7974,52 @@
      },
      {
       "name": "_collapse_near_duplicate_experiences",
-      "line": 2912,
-      "end": 2955,
+      "line": 2831,
+      "end": 2874,
       "span": 44,
       "args": [
        "self",
        "experiences"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_normalize_experience_text",
-      "line": 2958,
-      "end": 2960,
+      "line": 2877,
+      "end": 2879,
       "span": 3,
       "args": [
        "text"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_near_duplicate_similarity_score",
-      "line": 2963,
-      "end": 2975,
+      "line": 2882,
+      "end": 2894,
       "span": 13,
       "args": [
        "left",
        "right"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_char_trigrams",
-      "line": 2978,
-      "end": 2981,
+      "line": 2897,
+      "end": 2900,
       "span": 4,
       "args": [
        "text"
@@ -10524,8 +8032,8 @@
      },
      {
       "name": "_with_near_duplicate_metadata",
-      "line": 2983,
-      "end": 3000,
+      "line": 2902,
+      "end": 2919,
       "span": 18,
       "args": [
        "self",
@@ -10540,8 +8048,8 @@
      },
      {
       "name": "_iso_date",
-      "line": 3003,
-      "end": 3004,
+      "line": 2922,
+      "end": 2923,
       "span": 2,
       "args": [
        "timestamp"
@@ -10554,8 +8062,8 @@
      },
      {
       "name": "_gate_semantic_experiences",
-      "line": 3006,
-      "end": 3038,
+      "line": 2925,
+      "end": 2957,
       "span": 33,
       "args": [
        "self",
@@ -10570,23 +8078,23 @@
      },
      {
       "name": "_experiences_for_persona",
-      "line": 3040,
-      "end": 3050,
+      "line": 2959,
+      "end": 2969,
       "span": 11,
       "args": [
        "self",
        "experiences"
       ],
       "refs": {
-       "src": 3,
+       "src": 1,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_build_routine_summaries",
-      "line": 3052,
-      "end": 3105,
+      "line": 2971,
+      "end": 3024,
       "span": 54,
       "args": [
        "self",
@@ -10600,8 +8108,8 @@
      },
      {
       "name": "_routine_tokens",
-      "line": 3108,
-      "end": 3123,
+      "line": 3027,
+      "end": 3042,
       "span": 16,
       "args": [
        "text"
@@ -10614,23 +8122,23 @@
      },
      {
       "name": "_token_jaccard",
-      "line": 3126,
-      "end": 3132,
+      "line": 3045,
+      "end": 3051,
       "span": 7,
       "args": [
        "left",
        "right"
       ],
       "refs": {
-       "src": 5,
+       "src": 3,
        "tests": 0,
        "scripts": 0
       }
      },
      {
       "name": "_routine_phrase",
-      "line": 3135,
-      "end": 3147,
+      "line": 3054,
+      "end": 3066,
       "span": 13,
       "args": [
        "text"
@@ -10643,8 +8151,8 @@
      },
      {
       "name": "_experience_timestamp",
-      "line": 3150,
-      "end": 3168,
+      "line": 3069,
+      "end": 3087,
       "span": 19,
       "args": [
        "item"
@@ -10657,8 +8165,8 @@
      },
      {
       "name": "_format_last_seen",
-      "line": 3171,
-      "end": 3183,
+      "line": 3090,
+      "end": 3102,
       "span": 13,
       "args": [
        "metadata"
@@ -10671,14 +8179,14 @@
      },
      {
       "name": "_normalize_entities",
-      "line": 3186,
-      "end": 3200,
+      "line": 3105,
+      "end": 3119,
       "span": 15,
       "args": [
        "entries"
       ],
       "refs": {
-       "src": 5,
+       "src": 2,
        "tests": 0,
        "scripts": 0
       }
@@ -10818,7 +8326,7 @@
  {
   "file": "src/gpt5_roleplay_system/server.py",
   "area": "src",
-  "lines": 575,
+  "lines": 541,
   "imports": [
    "__future__",
    "argparse",
@@ -10831,7 +8339,6 @@
    "background_tasks",
    "config",
    "controller",
-   "deduplication",
    "experience_vector",
    "llm",
    "models",
@@ -10845,13 +8352,13 @@
   "classes": [
    {
     "name": "StatusChannelErrorHandler",
-    "line": 53,
-    "end": 80,
+    "line": 52,
+    "end": 79,
     "methods": [
      {
       "name": "__init__",
-      "line": 56,
-      "end": 59,
+      "line": 55,
+      "end": 58,
       "span": 4,
       "args": [
        "self",
@@ -10860,15 +8367,15 @@
        "level"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
      },
      {
       "name": "emit",
-      "line": 61,
-      "end": 80,
+      "line": 60,
+      "end": 79,
       "span": 20,
       "args": [
        "self",
@@ -10884,13 +8391,13 @@
    },
    {
     "name": "GPT5RoleplayServer",
-    "line": 83,
-    "end": 272,
+    "line": 82,
+    "end": 271,
     "methods": [
      {
       "name": "__init__",
-      "line": 84,
-      "end": 105,
+      "line": 83,
+      "end": 104,
       "span": 22,
       "args": [
        "self",
@@ -10902,29 +8409,29 @@
        "tracer"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
      },
      {
       "name": "start",
-      "line": 107,
-      "end": 131,
+      "line": 106,
+      "end": 130,
       "span": 25,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 24,
+       "src": 21,
        "tests": 9,
        "scripts": 12
       }
      },
      {
       "name": "_handle_client",
-      "line": 133,
-      "end": 214,
+      "line": 132,
+      "end": 213,
       "span": 82,
       "args": [
        "self",
@@ -10939,8 +8446,8 @@
      },
      {
       "name": "_enqueue_message",
-      "line": 216,
-      "end": 236,
+      "line": 215,
+      "end": 235,
       "span": 21,
       "args": [
        "self",
@@ -10957,8 +8464,8 @@
      },
      {
       "name": "_install_error_handler",
-      "line": 238,
-      "end": 249,
+      "line": 237,
+      "end": 248,
       "span": 12,
       "args": [
        "self"
@@ -10971,8 +8478,8 @@
      },
      {
       "name": "_remove_error_handler",
-      "line": 251,
-      "end": 257,
+      "line": 250,
+      "end": 256,
       "span": 7,
       "args": [
        "self"
@@ -10985,8 +8492,8 @@
      },
      {
       "name": "_broadcast_status_chat",
-      "line": 259,
-      "end": 272,
+      "line": 258,
+      "end": 271,
       "span": 14,
       "args": [
        "self",
@@ -11004,8 +8511,8 @@
   "functions": [
    {
     "name": "_format_idle_duration",
-    "line": 29,
-    "end": 50,
+    "line": 28,
+    "end": 49,
     "span": 22,
     "args": [
      "seconds"
@@ -11018,8 +8525,8 @@
    },
    {
     "name": "run_server",
-    "line": 275,
-    "end": 283,
+    "line": 274,
+    "end": 282,
     "span": 9,
     "args": [
      "host",
@@ -11034,8 +8541,8 @@
    },
    {
     "name": "main",
-    "line": 286,
-    "end": 298,
+    "line": 285,
+    "end": 297,
     "span": 13,
     "args": [],
     "refs": {
@@ -11046,8 +8553,8 @@
    },
    {
     "name": "_build_knowledge_store",
-    "line": 301,
-    "end": 313,
+    "line": 300,
+    "end": 312,
     "span": 13,
     "args": [
      "config"
@@ -11060,8 +8567,8 @@
    },
    {
     "name": "_build_llm_client",
-    "line": 316,
-    "end": 361,
+    "line": 315,
+    "end": 360,
     "span": 46,
     "args": [
      "config"
@@ -11074,8 +8581,8 @@
    },
    {
     "name": "_build_tracer",
-    "line": 364,
-    "end": 376,
+    "line": 363,
+    "end": 375,
     "span": 13,
     "args": [
      "config"
@@ -11088,8 +8595,8 @@
    },
    {
     "name": "_build_experience_index",
-    "line": 379,
-    "end": 422,
+    "line": 378,
+    "end": 421,
     "span": 44,
     "args": [
      "config",
@@ -11103,8 +8610,8 @@
    },
    {
     "name": "_compute_autonomy_delay",
-    "line": 425,
-    "end": 445,
+    "line": 424,
+    "end": 444,
     "span": 21,
     "args": [
      "snapshot",
@@ -11119,8 +8626,8 @@
    },
    {
     "name": "_autonomy_loop",
-    "line": 448,
-    "end": 470,
+    "line": 447,
+    "end": 469,
     "span": 23,
     "args": [
      "session",
@@ -11135,8 +8642,8 @@
    },
    {
     "name": "_status_loop",
-    "line": 473,
-    "end": 517,
+    "line": 472,
+    "end": 516,
     "span": 45,
     "args": [
      "session",
@@ -11149,70 +8656,9 @@
     }
    },
    {
-    "name": "_parse_deduped_facts_response",
-    "line": 520,
-    "end": 521,
-    "span": 2,
-    "args": [
-     "response_text"
-    ],
-    "refs": {
-     "src": 0,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "_facts_deduplication_loop",
-    "line": 524,
-    "end": 530,
-    "span": 7,
-    "args": [
-     "config",
-     "knowledge_store",
-     "llm_client"
-    ],
-    "refs": {
-     "src": 0,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "_build_experience_dedupe_plans",
-    "line": 533,
-    "end": 543,
-    "span": 11,
-    "args": [
-     "rows",
-     "similarity_threshold",
-     "max_gap_seconds"
-    ],
-    "refs": {
-     "src": 0,
-     "tests": 2,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "_experience_deduplication_loop",
-    "line": 546,
-    "end": 550,
-    "span": 5,
-    "args": [
-     "config",
-     "knowledge_store"
-    ],
-    "refs": {
-     "src": 0,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
     "name": "_cancel_task",
-    "line": 553,
-    "end": 563,
+    "line": 519,
+    "end": 529,
     "span": 11,
     "args": [
      "task"
@@ -11225,8 +8671,8 @@
    },
    {
     "name": "_format_error_text",
-    "line": 566,
-    "end": 571,
+    "line": 532,
+    "end": 537,
     "span": 6,
     "args": [
      "record",
@@ -11402,7 +8848,7 @@
        "user_id"
       ],
       "refs": {
-       "src": 26,
+       "src": 20,
        "tests": 112,
        "scripts": 3
       }
@@ -11560,7 +9006,7 @@
      "ts"
     ],
     "refs": {
-     "src": 54,
+     "src": 40,
      "tests": 0,
      "scripts": 0
     }
@@ -11620,7 +9066,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -11679,7 +9125,7 @@
        "window"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 5,
        "scripts": 0
       }
@@ -11707,7 +9153,7 @@
        "self"
       ],
       "refs": {
-       "src": 139,
+       "src": 114,
        "tests": 145,
        "scripts": 8
       }
@@ -11721,7 +9167,7 @@
        "self"
       ],
       "refs": {
-       "src": 482,
+       "src": 356,
        "tests": 181,
        "scripts": 9
       }
@@ -11743,7 +9189,7 @@
        "data"
       ],
       "refs": {
-       "src": 9,
+       "src": 10,
        "tests": 3,
        "scripts": 0
       }
@@ -11757,7 +9203,7 @@
        "self"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 1,
        "scripts": 0
       }
@@ -12220,7 +9666,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -12236,7 +9682,7 @@
        "payload"
       ],
       "refs": {
-       "src": 22,
+       "src": 19,
        "tests": 2,
        "scripts": 0
       }
@@ -12512,7 +9958,7 @@
        "messages"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 7,
        "scripts": 0
       }
@@ -12767,7 +10213,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -12844,7 +10290,7 @@
        "messages"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 7,
        "scripts": 0
       }
@@ -12884,7 +10330,7 @@
        "fail_times"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -12901,7 +10347,7 @@
        "participants"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 2,
        "scripts": 0
       }
@@ -12916,7 +10362,7 @@
        "label"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 3,
        "scripts": 0
       }
@@ -13062,30 +10508,31 @@
  {
   "file": "tests/test_llm.py",
   "area": "tests",
-  "lines": 1673,
+  "lines": 1668,
   "imports": [
    "asyncio",
    "json",
    "unittest.mock",
    "gpt5_roleplay_system.llm",
+   "gpt5_roleplay_system.llm_prompts",
    "gpt5_roleplay_system.models"
   ],
   "classes": [
    {
     "name": "_Usage",
-    "line": 1631,
-    "end": 1637,
+    "line": 1626,
+    "end": 1632,
     "methods": [
      {
       "name": "__init__",
-      "line": 1632,
-      "end": 1637,
+      "line": 1627,
+      "end": 1632,
       "span": 6,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -13094,19 +10541,19 @@
    },
    {
     "name": "_Completion",
-    "line": 1640,
-    "end": 1642,
+    "line": 1635,
+    "end": 1637,
     "methods": [
      {
       "name": "__init__",
-      "line": 1641,
-      "end": 1642,
+      "line": 1636,
+      "end": 1637,
       "span": 2,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -13117,8 +10564,8 @@
   "functions": [
    {
     "name": "test_mixed_action_type_emits_both_chat_and_primary",
-    "line": 21,
-    "end": 40,
+    "line": 22,
+    "end": 41,
     "span": 20,
     "args": [],
     "refs": {
@@ -13129,8 +10576,8 @@
    },
    {
     "name": "test_autonomous_text_only_does_not_emit_chat_action",
-    "line": 43,
-    "end": 49,
+    "line": 44,
+    "end": 50,
     "span": 7,
     "args": [],
     "refs": {
@@ -13141,8 +10588,8 @@
    },
    {
     "name": "test_autonomous_bundle_parses_explicit_wait_and_delay",
-    "line": 52,
-    "end": 63,
+    "line": 53,
+    "end": 64,
     "span": 12,
     "args": [],
     "refs": {
@@ -13153,8 +10600,8 @@
    },
    {
     "name": "test_chat_mode_text_only_does_not_emit_chat_action",
-    "line": 66,
-    "end": 72,
+    "line": 67,
+    "end": 73,
     "span": 7,
     "args": [],
     "refs": {
@@ -13165,8 +10612,8 @@
    },
    {
     "name": "test_chat_mode_preserves_scheduler_override_fields",
-    "line": 75,
-    "end": 85,
+    "line": 76,
+    "end": 86,
     "span": 11,
     "args": [],
     "refs": {
@@ -13177,8 +10624,8 @@
    },
    {
     "name": "test_state_update_parses_scheduler_override_fields",
-    "line": 88,
-    "end": 94,
+    "line": 89,
+    "end": 95,
     "span": 7,
     "args": [],
     "refs": {
@@ -13189,8 +10636,8 @@
    },
    {
     "name": "test_structured_action_accepts_command_alias",
-    "line": 97,
-    "end": 105,
+    "line": 98,
+    "end": 106,
     "span": 9,
     "args": [],
     "refs": {
@@ -13201,8 +10648,8 @@
    },
    {
     "name": "test_structured_action_accepts_action_alias",
-    "line": 108,
-    "end": 116,
+    "line": 109,
+    "end": 117,
     "span": 9,
     "args": [],
     "refs": {
@@ -13213,8 +10660,8 @@
    },
    {
     "name": "test_structured_action_parses_face_target",
-    "line": 119,
-    "end": 131,
+    "line": 120,
+    "end": 132,
     "span": 13,
     "args": [],
     "refs": {
@@ -13225,8 +10672,8 @@
    },
    {
     "name": "test_structured_action_uses_parameters_text_when_content_missing",
-    "line": 134,
-    "end": 144,
+    "line": 135,
+    "end": 145,
     "span": 11,
     "args": [],
     "refs": {
@@ -13237,8 +10684,8 @@
    },
    {
     "name": "test_structured_emote_strips_wrapping_asterisks",
-    "line": 147,
-    "end": 157,
+    "line": 148,
+    "end": 158,
     "span": 11,
     "args": [],
     "refs": {
@@ -13249,8 +10696,8 @@
    },
    {
     "name": "test_structured_emote_fallback_text_strips_wrapping_asterisks",
-    "line": 160,
-    "end": 170,
+    "line": 161,
+    "end": 171,
     "span": 11,
     "args": [],
     "refs": {
@@ -13261,8 +10708,8 @@
    },
    {
     "name": "test_system_prompt_includes_persona_instructions",
-    "line": 173,
-    "end": 191,
+    "line": 174,
+    "end": 192,
     "span": 19,
     "args": [],
     "refs": {
@@ -13273,9 +10720,9 @@
    },
    {
     "name": "test_system_prompt_enforces_chat_emote_split_rules",
-    "line": 194,
+    "line": 195,
     "end": 199,
-    "span": 6,
+    "span": 5,
     "args": [],
     "refs": {
      "src": 0,
@@ -13286,8 +10733,8 @@
    {
     "name": "test_system_prompt_maps_entity_uuid_to_action_target_uuid",
     "line": 202,
-    "end": 206,
-    "span": 5,
+    "end": 205,
+    "span": 4,
     "args": [],
     "refs": {
      "src": 0,
@@ -13297,32 +10744,8 @@
    },
    {
     "name": "test_system_prompt_includes_closure_progression_rules",
-    "line": 209,
-    "end": 216,
-    "span": 8,
-    "args": [],
-    "refs": {
-     "src": 0,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "test_system_prompt_marks_previously_as_historical_context",
-    "line": 219,
-    "end": 223,
-    "span": 5,
-    "args": [],
-    "refs": {
-     "src": 0,
-     "tests": 0,
-     "scripts": 0
-    }
-   },
-   {
-    "name": "test_autonomous_system_prompt_marks_previously_as_historical_context",
-    "line": 226,
-    "end": 232,
+    "line": 208,
+    "end": 214,
     "span": 7,
     "args": [],
     "refs": {
@@ -13332,10 +10755,34 @@
     }
    },
    {
+    "name": "test_system_prompt_marks_previously_as_historical_context",
+    "line": 217,
+    "end": 220,
+    "span": 4,
+    "args": [],
+    "refs": {
+     "src": 0,
+     "tests": 0,
+     "scripts": 0
+    }
+   },
+   {
+    "name": "test_autonomous_system_prompt_marks_previously_as_historical_context",
+    "line": 223,
+    "end": 228,
+    "span": 6,
+    "args": [],
+    "refs": {
+     "src": 0,
+     "tests": 0,
+     "scripts": 0
+    }
+   },
+   {
     "name": "test_autonomous_system_prompt_maps_entity_uuid_to_action_target_uuid",
-    "line": 235,
-    "end": 239,
-    "span": 5,
+    "line": 231,
+    "end": 234,
+    "span": 4,
     "args": [],
     "refs": {
      "src": 0,
@@ -13345,8 +10792,8 @@
    },
    {
     "name": "test_format_context_omits_persona_identity_fields",
-    "line": 242,
-    "end": 264,
+    "line": 237,
+    "end": 259,
     "span": 23,
     "args": [],
     "refs": {
@@ -13357,8 +10804,8 @@
    },
    {
     "name": "test_format_autonomous_context_omits_persona_identity_fields",
-    "line": 267,
-    "end": 295,
+    "line": 262,
+    "end": 290,
     "span": 29,
     "args": [],
     "refs": {
@@ -13369,8 +10816,8 @@
    },
    {
     "name": "test_format_context_uses_source_inputs_without_contract_repair",
-    "line": 298,
-    "end": 340,
+    "line": 293,
+    "end": 335,
     "span": 43,
     "args": [],
     "refs": {
@@ -13381,8 +10828,8 @@
    },
    {
     "name": "test_format_context_pushes_live_turn_fields_to_end_for_prefix_caching",
-    "line": 343,
-    "end": 380,
+    "line": 338,
+    "end": 375,
     "span": 38,
     "args": [],
     "refs": {
@@ -13393,8 +10840,8 @@
    },
    {
     "name": "test_format_autonomous_context_pushes_live_fields_to_end_for_prefix_caching",
-    "line": 383,
-    "end": 429,
+    "line": 378,
+    "end": 424,
     "span": 47,
     "args": [],
     "refs": {
@@ -13405,8 +10852,8 @@
    },
    {
     "name": "test_format_context_moves_recency_fields_out_of_stable_people_facts_and_agent_state",
-    "line": 432,
-    "end": 477,
+    "line": 427,
+    "end": 472,
     "span": 46,
     "args": [],
     "refs": {
@@ -13417,8 +10864,8 @@
    },
    {
     "name": "test_format_context_separates_stable_object_catalog_from_dynamic_proximity",
-    "line": 480,
-    "end": 521,
+    "line": 475,
+    "end": 516,
     "span": 42,
     "args": [],
     "refs": {
@@ -13429,8 +10876,8 @@
    },
    {
     "name": "test_format_facts_context_includes_only_relevant_people",
-    "line": 524,
-    "end": 574,
+    "line": 519,
+    "end": 569,
     "span": 51,
     "args": [],
     "refs": {
@@ -13441,8 +10888,8 @@
    },
    {
     "name": "test_format_address_check_handles_participant_without_username_field",
-    "line": 577,
-    "end": 588,
+    "line": 572,
+    "end": 583,
     "span": 12,
     "args": [],
     "refs": {
@@ -13453,8 +10900,8 @@
    },
    {
     "name": "test_bundle_model_override_only_applies_to_bundle_requests",
-    "line": 591,
-    "end": 643,
+    "line": 586,
+    "end": 638,
     "span": 53,
     "args": [],
     "refs": {
@@ -13465,8 +10912,8 @@
    },
    {
     "name": "test_summarize_overflow_returns_empty_not_previous_summary_when_model_yields_nothing",
-    "line": 646,
-    "end": 670,
+    "line": 641,
+    "end": 665,
     "span": 25,
     "args": [],
     "refs": {
@@ -13477,8 +10924,8 @@
    },
    {
     "name": "test_summarize_uses_summary_model",
-    "line": 673,
-    "end": 699,
+    "line": 668,
+    "end": 694,
     "span": 27,
     "args": [],
     "refs": {
@@ -13489,8 +10936,8 @@
    },
    {
     "name": "test_summarize_payload_includes_existing_summary_and_timestamps",
-    "line": 702,
-    "end": 752,
+    "line": 697,
+    "end": 747,
     "span": 51,
     "args": [],
     "refs": {
@@ -13501,8 +10948,8 @@
    },
    {
     "name": "test_summarize_overflow_does_not_parse_legacy_footer_from_summary_text",
-    "line": 755,
-    "end": 780,
+    "line": 750,
+    "end": 775,
     "span": 26,
     "args": [],
     "refs": {
@@ -13513,8 +10960,8 @@
    },
    {
     "name": "test_summarize_episode_uses_dedicated_prompt_and_payload",
-    "line": 783,
-    "end": 820,
+    "line": 778,
+    "end": 815,
     "span": 38,
     "args": [],
     "refs": {
@@ -13525,8 +10972,8 @@
    },
    {
     "name": "test_summarize_payload_prefers_human_sender_label_over_uuid",
-    "line": 823,
-    "end": 857,
+    "line": 818,
+    "end": 852,
     "span": 35,
     "args": [],
     "refs": {
@@ -13537,8 +10984,8 @@
    },
    {
     "name": "test_request_bundle_includes_provider_routing_in_extra_body",
-    "line": 860,
-    "end": 908,
+    "line": 855,
+    "end": 903,
     "span": 49,
     "args": [],
     "refs": {
@@ -13549,8 +10996,8 @@
    },
    {
     "name": "test_request_facts_uses_facts_model_with_facts_provider_override",
-    "line": 911,
-    "end": 957,
+    "line": 906,
+    "end": 952,
     "span": 47,
     "args": [],
     "refs": {
@@ -13561,8 +11008,8 @@
    },
    {
     "name": "test_request_facts_provider_routing_falls_back_to_global_provider",
-    "line": 960,
-    "end": 1006,
+    "line": 955,
+    "end": 1001,
     "span": 47,
     "args": [],
     "refs": {
@@ -13573,8 +11020,8 @@
    },
    {
     "name": "test_is_addressed_to_me_uses_address_model_with_reasoning",
-    "line": 1009,
-    "end": 1036,
+    "line": 1004,
+    "end": 1031,
     "span": 28,
     "args": [],
     "refs": {
@@ -13585,8 +11032,8 @@
    },
    {
     "name": "test_request_text_with_model_includes_reasoning_extra_body",
-    "line": 1039,
-    "end": 1087,
+    "line": 1034,
+    "end": 1082,
     "span": 49,
     "args": [],
     "refs": {
@@ -13597,8 +11044,8 @@
    },
    {
     "name": "test_request_text_with_model_records_reasoning_trace",
-    "line": 1090,
-    "end": 1153,
+    "line": 1085,
+    "end": 1148,
     "span": 64,
     "args": [],
     "refs": {
@@ -13609,8 +11056,8 @@
    },
    {
     "name": "test_request_text_with_model_does_not_include_provider_routing",
-    "line": 1156,
-    "end": 1202,
+    "line": 1151,
+    "end": 1197,
     "span": 47,
     "args": [],
     "refs": {
@@ -13621,8 +11068,8 @@
    },
    {
     "name": "test_request_text_with_model_can_include_provider_without_reasoning",
-    "line": 1205,
-    "end": 1258,
+    "line": 1200,
+    "end": 1253,
     "span": 54,
     "args": [],
     "refs": {
@@ -13633,8 +11080,8 @@
    },
    {
     "name": "test_request_text_with_model_coerces_content_parts",
-    "line": 1261,
-    "end": 1299,
+    "line": 1256,
+    "end": 1294,
     "span": 39,
     "args": [],
     "refs": {
@@ -13645,8 +11092,8 @@
    },
    {
     "name": "test_request_structured_recovers_from_unparsed_markdown_content_parts",
-    "line": 1302,
-    "end": 1366,
+    "line": 1297,
+    "end": 1361,
     "span": 65,
     "args": [],
     "refs": {
@@ -13657,8 +11104,8 @@
    },
    {
     "name": "test_request_structured_accepts_null_participant_hints",
-    "line": 1369,
-    "end": 1422,
+    "line": 1364,
+    "end": 1417,
     "span": 54,
     "args": [],
     "refs": {
@@ -13669,8 +11116,8 @@
    },
    {
     "name": "test_request_structured_caches_no_endpoint_parse_failures",
-    "line": 1425,
-    "end": 1486,
+    "line": 1420,
+    "end": 1481,
     "span": 62,
     "args": [],
     "refs": {
@@ -13681,8 +11128,8 @@
    },
    {
     "name": "test_request_structured_cached_create_normalizes_singular_fact_field",
-    "line": 1489,
-    "end": 1558,
+    "line": 1484,
+    "end": 1553,
     "span": 70,
     "args": [],
     "refs": {
@@ -13693,8 +11140,8 @@
    },
    {
     "name": "test_structured_bundle_accepts_fact_without_user_id",
-    "line": 1561,
-    "end": 1579,
+    "line": 1556,
+    "end": 1574,
     "span": 19,
     "args": [],
     "refs": {
@@ -13705,8 +11152,8 @@
    },
    {
     "name": "test_structured_facts_only_accepts_null_user_id",
-    "line": 1582,
-    "end": 1597,
+    "line": 1577,
+    "end": 1592,
     "span": 16,
     "args": [],
     "refs": {
@@ -13717,8 +11164,8 @@
    },
    {
     "name": "test_generate_bundle_records_quality_fallback_when_api_key_missing",
-    "line": 1600,
-    "end": 1628,
+    "line": 1595,
+    "end": 1623,
     "span": 29,
     "args": [],
     "refs": {
@@ -13729,8 +11176,8 @@
    },
    {
     "name": "test_extract_prompt_cache_usage_parses_usage_fields",
-    "line": 1645,
-    "end": 1654,
+    "line": 1640,
+    "end": 1649,
     "span": 10,
     "args": [],
     "refs": {
@@ -13741,8 +11188,8 @@
    },
    {
     "name": "test_clean_json_repairs_common_malformed_wrappers",
-    "line": 1657,
-    "end": 1659,
+    "line": 1652,
+    "end": 1654,
     "span": 3,
     "args": [],
     "refs": {
@@ -13753,8 +11200,8 @@
    },
    {
     "name": "test_prompt_cache_stats_aggregates_counts",
-    "line": 1662,
-    "end": 1673,
+    "line": 1657,
+    "end": 1668,
     "span": 12,
     "args": [],
     "refs": {
@@ -13789,7 +11236,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -13844,7 +11291,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -14272,7 +11719,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -14336,7 +11783,7 @@
        "responder"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -14468,20 +11915,46 @@
  {
   "file": "tests/test_nonfinite_autonomy_delay.py",
   "area": "tests",
-  "lines": 31,
+  "lines": 41,
   "imports": [
    "math",
    "types",
-   "gpt5_roleplay_system.llm_response_mapper",
+   "gpt5_roleplay_system.llm",
    "gpt5_roleplay_system.pipeline"
   ],
   "classes": [],
   "functions": [
    {
-    "name": "test_structured_bundle_rejects_infinite_autonomy_delay",
+    "name": "_parsed_with_delay",
     "line": 8,
-    "end": 27,
-    "span": 20,
+    "end": 18,
+    "span": 11,
+    "args": [
+     "delay"
+    ],
+    "refs": {
+     "src": 0,
+     "tests": 2,
+     "scripts": 0
+    }
+   },
+   {
+    "name": "test_structured_bundle_rejects_infinite_autonomy_delay",
+    "line": 21,
+    "end": 31,
+    "span": 11,
+    "args": [],
+    "refs": {
+     "src": 0,
+     "tests": 0,
+     "scripts": 0
+    }
+   },
+   {
+    "name": "test_structured_bundle_rejects_nan_autonomy_delay",
+    "line": 34,
+    "end": 37,
+    "span": 4,
     "args": [],
     "refs": {
      "src": 0,
@@ -14491,8 +11964,8 @@
    },
    {
     "name": "test_pipeline_rejects_infinite_autonomy_delay_from_custom_client",
-    "line": 30,
-    "end": 31,
+    "line": 40,
+    "end": 41,
     "span": 2,
     "args": [],
     "refs": {
@@ -14646,7 +12119,7 @@
        "behaviour"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -14902,7 +12375,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -14934,7 +12407,7 @@
        "payload"
       ],
       "refs": {
-       "src": 22,
+       "src": 19,
        "tests": 2,
        "scripts": 0
       }
@@ -15056,7 +12529,7 @@
        "activity"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 1,
        "scripts": 2
       }
@@ -15146,7 +12619,7 @@
        "activity"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 1,
        "scripts": 2
       }
@@ -15259,7 +12732,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -15490,7 +12963,7 @@
        "messages"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 7,
        "scripts": 0
       }
@@ -15603,7 +13076,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -15691,7 +13164,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -15779,7 +13252,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -15794,7 +13267,7 @@
        "label"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 3,
        "scripts": 0
       }
@@ -15815,7 +13288,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -15855,7 +13328,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -15961,7 +13434,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -16068,7 +13541,7 @@
        "facts"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -16107,7 +13580,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -16124,7 +13597,7 @@
        "facts"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 13,
        "scripts": 0
       }
@@ -16146,7 +13619,7 @@
        "facts"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -16163,7 +13636,7 @@
        "participants"
       ],
       "refs": {
-       "src": 4,
+       "src": 3,
        "tests": 2,
        "scripts": 0
       }
@@ -16185,7 +13658,7 @@
        "user_ids"
       ],
       "refs": {
-       "src": 9,
+       "src": 7,
        "tests": 3,
        "scripts": 0
       }
@@ -16206,7 +13679,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -17229,22 +14702,23 @@
  {
   "file": "tests/test_server_experience_index.py",
   "area": "tests",
-  "lines": 156,
+  "lines": 157,
   "imports": [
    "__future__",
    "gpt5_roleplay_system.server",
+   "gpt5_roleplay_system.deduplication",
    "gpt5_roleplay_system.config"
   ],
   "classes": [
    {
     "name": "_FakeEmbedderClient",
-    "line": 7,
-    "end": 15,
+    "line": 8,
+    "end": 16,
     "methods": [
      {
       "name": "__init__",
-      "line": 8,
-      "end": 12,
+      "line": 9,
+      "end": 13,
       "span": 5,
       "args": [
        "self",
@@ -17254,15 +14728,15 @@
        "timeout_seconds"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
      },
      {
       "name": "is_available",
-      "line": 14,
-      "end": 15,
+      "line": 15,
+      "end": 16,
       "span": 2,
       "args": [
        "self"
@@ -17277,19 +14751,19 @@
    },
    {
     "name": "_FakeNeo4jStore",
-    "line": 18,
-    "end": 21,
+    "line": 19,
+    "end": 22,
     "methods": [
      {
       "name": "__init__",
-      "line": 19,
-      "end": 21,
+      "line": 20,
+      "end": 22,
       "span": 3,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -17298,13 +14772,13 @@
    },
    {
     "name": "_FakeNeo4jIndex",
-    "line": 24,
-    "end": 37,
+    "line": 25,
+    "end": 38,
     "methods": [
      {
       "name": "__init__",
-      "line": 27,
-      "end": 34,
+      "line": 28,
+      "end": 35,
       "span": 8,
       "args": [
        "self",
@@ -17316,21 +14790,21 @@
        "external_embedder"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
      },
      {
       "name": "is_enabled",
-      "line": 36,
-      "end": 37,
+      "line": 37,
+      "end": 38,
       "span": 2,
       "args": [
        "self"
       ],
       "refs": {
-       "src": 14,
+       "src": 11,
        "tests": 2,
        "scripts": 1
       }
@@ -17341,8 +14815,8 @@
   "functions": [
    {
     "name": "test_build_experience_index_prefers_dedicated_neo4j_genai_key",
-    "line": 40,
-    "end": 54,
+    "line": 41,
+    "end": 55,
     "span": 15,
     "args": [
      "monkeypatch"
@@ -17355,8 +14829,8 @@
    },
    {
     "name": "test_build_experience_index_does_not_reuse_openrouter_key_for_neo4j_genai",
-    "line": 57,
-    "end": 71,
+    "line": 58,
+    "end": 72,
     "span": 15,
     "args": [
      "monkeypatch"
@@ -17369,8 +14843,8 @@
    },
    {
     "name": "test_build_experience_index_can_disable_external_fallback",
-    "line": 74,
-    "end": 89,
+    "line": 75,
+    "end": 90,
     "span": 16,
     "args": [
      "monkeypatch"
@@ -17383,8 +14857,8 @@
    },
    {
     "name": "test_build_experience_dedupe_plans_merges_high_similarity_close_time_pairs",
-    "line": 92,
-    "end": 131,
+    "line": 93,
+    "end": 132,
     "span": 40,
     "args": [],
     "refs": {
@@ -17395,8 +14869,8 @@
    },
    {
     "name": "test_build_experience_dedupe_plans_skips_far_apart_pairs",
-    "line": 134,
-    "end": 156,
+    "line": 135,
+    "end": 157,
     "span": 23,
     "args": [],
     "refs": {
@@ -17432,7 +14906,7 @@
        "_data"
       ],
       "refs": {
-       "src": 9,
+       "src": 10,
        "tests": 3,
        "scripts": 0
       }
@@ -17446,7 +14920,7 @@
        "self"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 1,
        "scripts": 0
       }
@@ -17467,7 +14941,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 111,
        "scripts": 3
       }
@@ -17512,7 +14986,7 @@
        "_data"
       ],
       "refs": {
-       "src": 5,
+       "src": 4,
        "tests": 14,
        "scripts": 0
       }
@@ -17800,7 +15274,7 @@
      "config"
     ],
     "refs": {
-     "src": 4,
+     "src": 2,
      "tests": 0,
      "scripts": 1
     }
@@ -17958,7 +15432,7 @@
        "self"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 112,
        "scripts": 2
       }
@@ -18000,7 +15474,7 @@
        "self"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 2,
        "scripts": 1
       }
@@ -18131,7 +15605,7 @@
        "self"
       ],
       "refs": {
-       "src": 7,
+       "src": 6,
        "tests": 2,
        "scripts": 1
       }
@@ -18225,7 +15699,7 @@
        "port_override"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 112,
        "scripts": 2
       }
@@ -18239,7 +15713,7 @@
        "self"
       ],
       "refs": {
-       "src": 25,
+       "src": 22,
        "tests": 9,
        "scripts": 11
       }
@@ -18377,7 +15851,7 @@
        "backend"
       ],
       "refs": {
-       "src": 27,
+       "src": 21,
        "tests": 112,
        "scripts": 2
       }
