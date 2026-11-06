@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .cypher_utils import quote_cypher_identifier
 from .experience_vector import EmbeddingClient
 from .memory import ExperienceRecord
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,9 +74,11 @@ class Neo4jExperienceVectorIndex:
         with self._session() as session:
             try:
                 session.run(statement)
-            except Exception:
-                # Ignore if the Neo4j version doesn't support vector indexes.
-                pass
+            except Exception as exc:
+                # Older Neo4j versions may not support vector indexes; that is
+                # survivable, but it must not be silent -- semantic search
+                # being dead for months is how this failure mode hid before.
+                logger.warning("Could not ensure Neo4j vector index %s: %s", self._config.index_name, exc)
 
     def _check_genai_available(self) -> bool:
         if not self._model or not self._token:
@@ -90,7 +95,13 @@ class Neo4jExperienceVectorIndex:
                     model=self._model,
                 ).consume()
                 return True
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Neo4j GenAI vector encode probe failed (model=%s): %s. "
+                    "Semantic experience search will rely on the external embedder or be disabled.",
+                    self._model,
+                    exc,
+                )
                 return False
 
     def _external_available(self) -> bool:
@@ -135,8 +146,9 @@ class Neo4jExperienceVectorIndex:
                     timestamp_end=str(metadata.get("timestamp_end", "") or ""),
                     persona_id=persona_id,
                 ).consume()
-            except Exception:
+            except Exception as exc:
                 # If genai fails at runtime, fall back to external embedder if available.
+                logger.warning("Neo4j GenAI experience write failed; disabling GenAI path for this process: %s", exc)
                 self._genai_available = False
                 if self._external_available():
                     self._add_with_external_embedder(record, persona_id)
@@ -209,7 +221,8 @@ class Neo4jExperienceVectorIndex:
                     persona_id=persona_id,
                 )
                 return _records_from_query(records)
-            except Exception:
+            except Exception as exc:
+                logger.warning("Neo4j GenAI experience search failed; disabling GenAI path for this process: %s", exc)
                 self._genai_available = False
                 return []
 

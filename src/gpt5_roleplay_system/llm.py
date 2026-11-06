@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -2044,6 +2045,6 @@ def _optional_positive_float(value: Any) -> float | None:
         candidate = float(value)
     except (TypeError, ValueError):
         return None
-    if candidate <= 0.0:
+    if not math.isfinite(candidate) or candidate <= 0.0:
         return None
     return candidate
